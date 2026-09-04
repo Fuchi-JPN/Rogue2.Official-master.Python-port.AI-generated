@@ -161,13 +161,13 @@ class TestStrategy(unittest.TestCase):
         obs._tile_cache[(11, 10)] = const.TUNNEL
         self.assertEqual(strategy.corridor_step(obs, "l"), "j")
 
-    def test_corridor_junction_none(self):
-        # 左右とも開通→判断不能でNone
+    def test_corridor_junction_left(self):
+        # 左右とも開通→左手法で左へ（引き返さない）
         obs = self._tunnel_obs()
         obs._tile_cache[(11, 10)] = const.TUNNEL
         obs._tile_cache[(9, 10)] = const.TUNNEL
         obs._tile_cache[(10, 11)] = const.VERTWALL
-        self.assertIsNone(strategy.corridor_step(obs, "l"))
+        self.assertEqual(strategy.corridor_step(obs, "l"), "k")
 
     def test_corridor_not_on_tunnel(self):
         obs = _obs()  # FLOOR上
@@ -191,6 +191,24 @@ class TestStrategy(unittest.TestCase):
         # 壁で塞がれた方向→move
         obs._tile_cache[(10, 7)] = const.VERTWALL
         act = strategy.travel_action(obs, "l", (10, 14))
+        self.assertEqual(act.type, "move")
+
+    def test_oscillating(self):
+        self.assertFalse(strategy.oscillating([(1, 1), (2, 2)]))
+        self.assertTrue(strategy.oscillating([(12, 50), (12, 38)] * 3))
+        self.assertFalse(strategy.oscillating([(1, 1), (1, 2), (1, 3), (1, 4)]))
+
+    def test_run_sealed_when_oscillating(self):
+        # 往復中はrun封印→1歩移動で扉踏破へ
+        obs = self._tunnel_obs(pos=(10, 6))
+        act = strategy.travel_action(obs, "l", (10, 14), allow_run=False)
+        self.assertEqual(act.type, "move")
+        hist = [(10, 6), (10, 14)] * 3
+        risk = strategy.assess(obs)
+        obs.stairs_pos = (10, 14)
+        obs.unopened_doors = []
+        obs.visible_items = []
+        act, _ = strategy.decide(obs, risk, IdentifyMemo(), hist, memory=None)
         self.assertEqual(act.type, "move")
 
     def test_exploration_memory(self):

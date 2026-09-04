@@ -96,6 +96,7 @@ class AIOptions:
     max_tokens: int = 4096  # 推論系モデルはreasoningで消費するため余裕を持たせる
     log_file: str = "ai_session.jsonl"
     trace_file: str = "ai_trace.jsonl"  # 全文記録（prompt全文+生応答）。空で無効
+    trace_lines: int = 300  # 全文記録の保持行数（ローリング）
     show_screen: bool = True  # 画面ダンプ全文をLLMへ添付する
     headless: bool = False
     replay_file: str = ""
@@ -108,7 +109,7 @@ class AIOptions:
         kw = {}
         for f in ("enabled", "provider", "model", "endpoint", "api_key",
                   "max_turns", "delay_ms", "timeout", "log_file",
-                  "trace_file", "show_screen", "headless", "replay_file",
+                  "trace_file", "trace_lines", "show_screen", "headless", "replay_file",
                   "llm_fallback", "max_tokens"):
             if f in d and d[f] is not None:
                 kw[f] = d[f]

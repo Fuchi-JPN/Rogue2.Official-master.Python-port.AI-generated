@@ -72,7 +72,7 @@ class AIDriver:
         self._ticker_text = ""  # 推論文ティッカー原文
         self._ticker_t0 = 0.0
         self._ticker_interval = 0.12  # 秒/文字
-        self.trace = SessionLog(options.trace_file) if options.trace_file else None
+        self.trace = SessionLog(options.trace_file, max_lines=options.trace_lines) if options.trace_file else None
         self.corrections = 0  # 不合理手の補正回数
 
     # -- 起動 ----------------------------------------------------------
@@ -307,12 +307,15 @@ class AIDriver:
             action, thought = corr3
             thought = thought + "（隠し扉探索）"
             self.corrections += 1
-        # 高速移動への格上げ：最短路ヒント通りのmoveはrunにする
+        # 高速移動への格上げ：最短路ヒント通りのmoveはrunにする。
+        # 往復振動中は封印する（扉踏破の確実化）
         if action.type == "move" and action.direction:
-            hint_dir, _ = strategy.route_hint(obs)
-            if hint_dir == action.direction and strategy.straight_runway(obs, action.direction, 3):
-                action = AIAction(type="run", direction=action.direction)
-                thought = thought + "（高速移動）"
+            hist = getattr(self.policy, "pos_history", None) or []
+            if not strategy.oscillating(hist):
+                hint_dir, _ = strategy.route_hint(obs)
+                if hint_dir == action.direction and strategy.straight_runway(obs, action.direction, 3):
+                    action = AIAction(type="run", direction=action.direction)
+                    thought = thought + "（高速移動）"
         fallback = bool(getattr(self.policy, "last_fallback", False))
         if hasattr(self.policy, "last_latency_ms") and getattr(self.policy, "last_latency_ms", 0):
             latency_ms = self.policy.last_latency_ms

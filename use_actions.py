@@ -666,11 +666,17 @@ class UseActions:
         return ' '
 
     def _gmc_row_col(self, row: int, col: int) -> str:
-        """モンスター文字を取得"""
+        """モンスター文字を取得 (C版 monster.c: gmc相当)"""
         monster = self._monster_at(row, col)
         if monster:
+            if ((not (GameState.detect_monster or GameState.see_invisible or
+                      getattr(GameState, 'r_see_invisible', 0)) and
+                    (monster.m_flags & const.INVISIBLE)) or GameState.blind):
+                return monster.trail_char
+            if monster.m_flags & const.IMITATES:
+                return chr(monster.disguise) if hasattr(monster, 'disguise') else 'M'
             return monster.m_char if hasattr(monster, 'm_char') else 'M'
-        return 'M'
+        return '&'
 
     def _take_a_nap(self) -> None:
         """居眠り (C版 use.c: take_a_nap)
@@ -747,27 +753,58 @@ class UseActions:
         return None
 
     def _show_monsters(self) -> None:
-        """モンスターを表示する (C版 use.c: show_monsters)"""
+        """モンスターを表示する (C版 monster.c: show_monsters)"""
         GameState.detect_monster = True
+        if GameState.blind:
+            return
         monsters = self.dungeon.monsters if hasattr(self.dungeon, 'monsters') else []
         if monsters:
             for monster in monsters:
                 if self.display:
                     self.display.mvaddch(monster.row, monster.col, monster.m_char if hasattr(monster, 'm_char') else 'M')
+                if monster.m_flags & const.IMITATES:
+                    monster.m_flags &= ~const.IMITATES
+                    monster.m_flags |= const.WAKENS
             if self.display:
                 self.display.refresh()
-        # else:
-        #     message("奇妙な感じがした", 0)
+        else:
+            # C版 use.c: 怪物不在時はstrange_feeling相当
+            if self.message:
+                self.message.message("奇妙な感じがした", 0)
 
     def _show_objects(self) -> None:
-        """オブジェクトを表示する (C版 use.c: show_objects)"""
+        """オブジェクトを表示する (C版 object.c: show_objects)"""
         obj = self.dungeon.level_objects if hasattr(self.dungeon, 'level_objects') else None
         if obj:
             while obj:
+                rc = self._get_mask_char(obj.item_type)
+                # C版: モンスター下の品はtrail_charへ（状態更新が先）
+                try:
+                    if self.dungeon.dungeon[obj.row][obj.col] & const.MONSTER:
+                        mon = self._monster_at(obj.row, obj.col)
+                        if mon is not None:
+                            mon.trail_char = rc
+                except Exception:
+                    pass
+                # C版: 画面がA-Z以外かつ自位置以外なら描画
                 if self.display:
-                    ch = self._get_mask_char(obj.item_type)
-                    self.display.mvaddch(obj.row, obj.col, ch)
+                    try:
+                        mc = self.display.mvinch(obj.row, obj.col)
+                    except Exception:
+                        mc = ord(' ')
+                    pr = getattr(self.player, 'row', -1)
+                    pc = getattr(self.player, 'col', -1)
+                    if not (ord('A') <= mc <= ord('Z')) and (obj.row != pr or obj.col != pc):
+                        self.display.mvaddch(obj.row, obj.col, rc)
                 obj = obj.next_object
+            # C版: 第2ループでIMITATESをdisguiseで上書き
+            try:
+                mons = self.dungeon.monsters if hasattr(self.dungeon, 'monsters') else []
+                for mon in (mons or []):
+                    if mon.m_flags & const.IMITATES and self.display:
+                        self.display.mvaddch(mon.row, mon.col, mon.disguise if hasattr(mon, 'disguise') else 'M')
+            except Exception:
+                pass
             if self.display:
                 self.display.refresh()
 
@@ -838,7 +875,9 @@ class UseActions:
                     s = self.dungeon.dungeon[i][j]
                 if s & mask:
                     ch = self.display.mvinch(i, j)
-                    if (ch == ' ') or ((ch >= 'A') and (ch <= 'Z')) or (s & (const.TRAP | const.HIDDEN)):
+                    # mvinchはintを返すため文字化して比較する (C版はchtype)
+                    och = chr(ch) if isinstance(ch, int) else ch
+                    if (och == ' ') or ((ord('A') <= ord(och) <= ord('Z')) if len(och) == 1 else False) or (s & (const.TRAP | const.HIDDEN)):
                         # HIDDEN を解除
                         if hasattr(self.dungeon, 'dungeon'):
                             self.dungeon.dungeon[i][j] &= ~const.HIDDEN
@@ -858,5 +897,13 @@ class UseActions:
                             new_ch = '#'
                         else:
                             continue
-                        if not (s & const.MONSTER) or (ch == ' '):
+                        if not (s & const.MONSTER) or (och == ' '):
                             self.display.addch(new_ch)
+                        # C版 room.c:327-333 描画文字でtrailを更新
+                        if s & const.MONSTER:
+                            try:
+                                mon = self._monster_at(i, j)
+                                if mon is not None:
+                                    mon.trail_char = new_ch
+                            except Exception:
+                                pass

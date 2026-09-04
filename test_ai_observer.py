@@ -185,7 +185,7 @@ class TestDriver(unittest.TestCase):
             path = f.name
         try:
             d = AIDriver(game, AIOptions(enabled=True, log_file="", trace_file=path,
-                                           provider="scripted"))
+                                         provider="scripted"))
             d.start()
             obs = AIObservation()
             obs.player_pos = (10, 10)
@@ -194,6 +194,25 @@ class TestDriver(unittest.TestCase):
             lines = open(path, encoding="utf-8").read().strip().split("\n")
             rec = json.loads(lines[0])
             self.assertIn("turn", rec)
+        finally:
+            os.unlink(path)
+
+    def test_trace_rolling(self):
+        import tempfile
+        from ai.session_log import SessionLog
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
+            path = f.name
+        try:
+            log = SessionLog(path, max_lines=10)
+            log.open()
+            for i in range(25):
+                log.write({"turn": i})
+            log.close()
+            lines = [ln for ln in open(path, encoding="utf-8") if ln.strip()]
+            self.assertEqual(len(lines), 10)
+            import json
+            self.assertEqual(json.loads(lines[0])["turn"], 15)
+            self.assertEqual(json.loads(lines[-1])["turn"], 24)
         finally:
             os.unlink(path)
 

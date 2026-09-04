@@ -7,13 +7,23 @@ from typing import Optional
 
 
 class SessionLog:
-    def __init__(self, path: str):
+    def __init__(self, path: str, max_lines: int = 0):
+        """path: 記録先。max_lines>0で最新N行のみ保持（ローリング）"""
         self.path = path
+        self.max_lines = max_lines
         self._fh = None
+        self._count = 0
 
     def open(self):
         if self.path:
             self._fh = open(self.path, "a", encoding="utf-8")
+            if self.max_lines > 0:
+                try:
+                    with open(self.path, encoding="utf-8") as f:
+                        self._count = sum(1 for _ in f)
+                except Exception:
+                    self._count = 0
+                self._trim_locked()
 
     def write(self, record: dict):
         if self._fh is None:
@@ -21,6 +31,24 @@ class SessionLog:
         try:
             self._fh.write(json.dumps(record, ensure_ascii=False) + "\n")
             self._fh.flush()
+            self._count += 1
+            if self.max_lines > 0 and self._count > self.max_lines:
+                self._trim_locked()
+        except Exception:
+            pass
+
+    def _trim_locked(self):
+        """末尾max_lines行だけ残して切り詰める"""
+        try:
+            self._fh.flush()
+            with open(self.path, encoding="utf-8") as f:
+                lines = f.readlines()
+            keep = lines[-self.max_lines:]
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.writelines(keep)
+            self._fh.close()
+            self._fh = open(self.path, "a", encoding="utf-8")
+            self._count = len(keep)
         except Exception:
             pass
 

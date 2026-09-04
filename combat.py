@@ -1199,15 +1199,6 @@ class MonsterAI:
 
     def _move_mon_to(self, monster: Monster, row: int, col: int) -> None:
         """モンスターを指定位置に移動 (C版 monster.c: move_mon_to)"""
-        # C版 monster.c:411-416 ドアマスへの移動はdr_course経由（trow/tcol管理）
-        if self.dungeon.dungeon[row][col] & const.DOOR:
-            if getattr(self, 'display', None):
-                try:
-                    rn = self.dungeon.get_room_number(row, col)
-                    entering = (rn == GameState.cur_room)
-                    self.display.dr_course(monster, entering, row, col, self.dungeon)
-                except Exception:
-                    pass
         mrow = monster.row
         mcol = monster.col
 
@@ -1252,8 +1243,24 @@ class MonsterAI:
             if getattr(self, 'display', None):
                 self.display.mvaddch(mrow, mcol, ord(' '))
 
-        monster.row = row
-        monster.col = col
+        # C版 monster.c:411-416 ドアマスへの移動は末尾でdr_course経由。
+        # enteringは旧位置のTUNNEL判定。dr_courseがrow/colを設定するため
+        # 非DOOR時のみ直接代入する
+        if self.dungeon.dungeon[row][col] & const.DOOR:
+            if getattr(self, 'display', None):
+                try:
+                    entering = bool(self.dungeon.dungeon[mrow][mcol] & const.TUNNEL)
+                    self.display.dr_course(monster, entering, row, col, self.dungeon)
+                except Exception:
+                    monster.row = row
+                    monster.col = col
+            else:
+                # 表示なしでも座標は進める（trow管理はdr_course不在のため据え置き）
+                monster.row = row
+                monster.col = col
+        else:
+            monster.row = row
+            monster.col = col
 
     def _mon_can_go(self, monster: Monster, row: int, col: int) -> bool:
         """モンスターが移動できるかチェック"""
@@ -1361,13 +1368,20 @@ class MonsterAI:
                     break
 
     def show_monsters(self) -> None:
-        """モンスターを表示"""
+        """モンスターを表示 (C版 monster.c: show_monsters)"""
         self.detect_monster = True
 
         if self.blind:
             return
 
         for monster in self.dungeon.monsters:
+            # C版: 描画が先、IMITATES解除が後
+            if getattr(self, 'display', None):
+                try:
+                    ch = monster.m_char if hasattr(monster, 'm_char') else 'M'
+                    self.display.mvaddch(monster.row, monster.col, ch)
+                except Exception:
+                    pass
             if monster.m_flags & const.IMITATES:
                 monster.m_flags &= ~const.IMITATES
                 monster.m_flags |= const.WAKENS
@@ -1493,10 +1507,17 @@ class MonsterAI:
         return True
 
     def aggravate(self) -> None:
-        """全モンスターを起こす"""
+        """全モンスターを起こす (C版 monster.c: aggravate)"""
         for monster in self.dungeon.monsters:
             self._wake_up(monster)
             monster.m_flags &= ~const.IMITATES
+            # C版: 可視なら描画
+            if getattr(self, 'display', None):
+                try:
+                    if self._rogue_can_see(monster.row, monster.col):
+                        self.display.mvaddch(monster.row, monster.col, self.gmc(monster))
+                except Exception:
+                    pass
 
     def _mon_sees(self, monster: Monster, row: int, col: int) -> bool:
         """モンスターが位置を見えるかチェック"""

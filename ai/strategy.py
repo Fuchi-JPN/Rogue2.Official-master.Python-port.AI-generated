@@ -180,12 +180,12 @@ REVERSE_OF = {'h': 'l', 'l': 'h', 'j': 'k', 'k': 'j',
 
 
 def corridor_step(obs: AIObservation, heading):
-    """通路追従の次の一手。条件外・判断不能時はNone。
+    """通路追従の次の一手。条件外・袋小路のみNone。
 
     通路（#）・扉（+）上で前進方向が既知の場合：直進、なければ
-    左右のいずれか一方が開通していればそちらへ。来た方向への
-    Uターン（部屋への逆戻り）は選ばない。分岐・袋小路はNone
-    （通常判断に委ねる）。
+    左右の開通側へ（両開通は左手法で左へ）。来た方向への
+    Uターン（部屋への逆戻り）は選ばない。袋小路（戻る以外に
+    道なし）・非通路・向き不明のみNone（通常判断に委ねる）。
     """
     if not heading or heading not in DIR_DELTA:
         return None
@@ -203,9 +203,29 @@ def corridor_step(obs: AIObservation, heading):
         right = RIGHT_OF[heading]
         l_ok = left in legal and left != back
         r_ok = right in legal and right != back
-        if l_ok and not r_ok:
+        if l_ok:
             return left
-        if r_ok and not l_ok:
+        if r_ok:
+            return right
+    return None
+    if not heading or heading not in DIR_DELTA:
+        return None
+    cache = getattr(obs, "_tile_cache", {}) or {}
+    pr, pc = obs.player_pos
+    cur = cache.get((pr, pc))
+    if cur is None or not (cur & (const.TUNNEL | const.DOOR)):
+        return None
+    legal = set(legal_moves(obs))
+    back = REVERSE_OF.get(heading)
+    if heading in legal:
+        return heading
+    if heading in LEFT_OF:
+        left = LEFT_OF[heading]
+        right = RIGHT_OF[heading]
+        # 左手法：左優先、なければ右。戻りは選ばない
+        if left in legal and left != back:
+            return left
+        if right in legal and right != back:
             return right
     return None
 
@@ -359,6 +379,13 @@ def bfs_distance(obs: AIObservation, target: tuple):
 RUN_MIN_DIST = 3  # この距離以上かつ直線路なら高速移動（run）を使う
 
 
+def oscillating(pos_history: list) -> bool:
+    """A-B-A-B型の往復振動を検知する（高速移動の封印用）"""
+    if len(pos_history) < 4:
+        return False
+    return len(set(pos_history[-4:])) <= 2
+
+
 def straight_runway(obs: AIObservation, d: str, min_len: int = 3) -> bool:
     """方向dへmin_lenマス以上の直線路があるか"""
     if d not in DIR_DELTA:
@@ -378,17 +405,19 @@ def straight_runway(obs: AIObservation, d: str, min_len: int = 3) -> bool:
     return True
 
 
-def travel_action(obs: AIObservation, d: str, target=None):
+def travel_action(obs: AIObservation, d: str, target=None, allow_run: bool = True):
     """移動行動の作成。長距離直線路は高速移動（run＝大文字キー）にする。
 
     runは「何かにぶつかるまで連続移動」し、LLM問い合わせ回数を減らす。
+    往復振動中（allow_run=False）は1歩移動に限定し、扉踏破を確実にする。
     """
-    if target is not None:
-        dist = bfs_distance(obs, tuple(target))
-        if dist is not None and dist >= RUN_MIN_DIST and straight_runway(obs, d, 3):
+    if allow_run:
+        if target is not None:
+            dist = bfs_distance(obs, tuple(target))
+            if dist is not None and dist >= RUN_MIN_DIST and straight_runway(obs, d, 3):
+                return AIAction(type="run", direction=d)
+        elif straight_runway(obs, d, 2):
             return AIAction(type="run", direction=d)
-    elif straight_runway(obs, d, 2):
-        return AIAction(type="run", direction=d)
     return AIAction(type="move", direction=d)
 
 
@@ -426,6 +455,8 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
     heading: 前手の移動方向（通路追従用。h/j/k/l/y/u/b/n）
     memory: ExplorationMemory（行き止まり探索用。None可）
     """
+    # 往復振動中は高速移動を封印し、1歩移動で扉踏破を確実にする
+    allow_run = not oscillating(pos_history or [])
     st = obs.status
     flags = obs.flags
 
@@ -455,14 +486,14 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
 
     # S4: 空腹（餓死回避のみ最優先。回復・ stair より上）
     if risk.hunger_level in ("weak", "faint"):
-        act = _seek_food(obs)
+        act = _seek_food(obs, allow_run)
         if act:
             return act
         # 食料が見えなければ降下を急ぐ
         if obs.stairs_pos:
             d = _first_step_toward(obs, obs.stairs_pos)
             if d:
-                return travel_action(obs, d, obs.stairs_pos), "食料なし・降下を急ぐ"
+                return travel_action(obs, d, obs.stairs_pos, allow_run), "食料なし・降下を急ぐ"
 
     # S5: 拾得（敵隣接なし限り最優先。回復・降下より上）
     if _item_at_feet(obs):
@@ -471,7 +502,7 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
     # S5b: 通路追従（進行方向を記憶し、直進・左右で扉を探す）
     d = corridor_step(obs, heading)
     if d:
-        return travel_action(obs, d), "通路を直進"
+        return travel_action(obs, d, allow_run=allow_run), "通路を直進"
 
     # S5c: 行き止まりの隠し扉探索（最大10手。なければ打ち切り）
     if memory is not None:
@@ -484,7 +515,7 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
         tgt = min(obs.visible_items, key=lambda it: _dist(obs.player_pos, it["pos"]))["pos"]
         d = _first_step_toward(obs, tgt)
         if d:
-            return travel_action(obs, d, tgt), "アイテムへ移動"
+            return travel_action(obs, d, tgt, allow_run), "アイテムへ移動"
 
     # S3: 回復待ち
     if st.hp_cur < st.hp_max and risk.can_rest_safely:
@@ -492,7 +523,7 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
 
     # S4続き：hungry段階の食料探索
     if risk.hunger_level == "hungry":
-        act = _seek_food(obs)
+        act = _seek_food(obs, allow_run)
         if act:
             return act
 
@@ -502,11 +533,11 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
         tgt = min(unopened, key=lambda p: _dist(obs.player_pos, tuple(p)))
         d = _first_step_toward(obs, tuple(tgt))
         if d:
-            return travel_action(obs, d, tgt), "未開の扉へ"
+            return travel_action(obs, d, tgt, allow_run), "未開の扉へ"
     if risk.should_descend and obs.stairs_pos:
         d = _first_step_toward(obs, obs.stairs_pos)
         if d:
-            return travel_action(obs, d, obs.stairs_pos), "階段へ移動"
+            return travel_action(obs, d, obs.stairs_pos, allow_run), "階段へ移動"
         if obs.player_pos == obs.stairs_pos:
             return AIAction(type="descend"), "階段を降りる"
 
@@ -519,7 +550,7 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
     if obs.stairs_pos:
         d = _first_step_toward(obs, obs.stairs_pos)
         if d:
-            return travel_action(obs, d, obs.stairs_pos), "階段へ接近"
+            return travel_action(obs, d, obs.stairs_pos, allow_run), "階段へ接近"
         if obs.player_pos == obs.stairs_pos:
             return AIAction(type="descend"), "階段を降りる"
 
@@ -587,7 +618,7 @@ def _item_at_feet(obs: AIObservation) -> bool:
     return any(it["pos"] == obs.player_pos for it in obs.visible_items)
 
 
-def _seek_food(obs: AIObservation):
+def _seek_food(obs: AIObservation, allow_run: bool = True):
     """食料（':'）への移動。なければNone"""
     foods = [it for it in obs.visible_items if it.get("glyph") == ":"]
     if not foods:
@@ -597,7 +628,7 @@ def _seek_food(obs: AIObservation):
         return AIAction(type="pickup"), "食料を拾得"
     d = _first_step_toward(obs, tgt)
     if d:
-        return travel_action(obs, d, tgt), "食料へ移動"
+        return travel_action(obs, d, tgt, allow_run), "食料へ移動"
     return None
 
 

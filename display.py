@@ -291,16 +291,22 @@ class Display:
         self.mvaddch(player.row, player.col, player.fchar)
 
     def _draw_tile(self, dungeon_level, row: int, col: int, tile: int) -> None:
-        """タイルを描画（C言語版 room.c: get_dungeon_char に対応）"""
+        """タイルを描画（C言語版 room.c: get_dungeon_char の分岐順に準拠）"""
         ch = ' '
-        # 壁の種類を区別する（重要：水平壁と垂直壁で文字が異なる）
-        if tile & const.HORWALL:
+        # C版の優先順: TUNNEL/STAIRS(&&!HIDDEN) → HORWALL → VERTWALL
+        # → FLOOR(TRAP&&!HIDDEN→^) → DOOR。単独TRAPは' '。
+        if (tile & (const.TUNNEL | const.STAIRS)) and not (tile & const.HIDDEN):
+            ch = '%' if (tile & const.STAIRS) else '#'
+        elif tile & const.HORWALL:
             ch = '-'
         elif tile & const.VERTWALL:
             ch = '|'
-        elif const.is_floor(tile):
-            ch = '.'
-        elif const.is_door(tile):
+        elif tile & const.FLOOR:
+            if (tile & const.TRAP) and not (tile & const.HIDDEN):
+                ch = '^'
+            else:
+                ch = '.'
+        elif tile & const.DOOR:
             # 隠されたドアは壁として表示（C言語版と同じ）
             if tile & const.HIDDEN:
                 # 周囲の壁に合わせて表示（dungeon_levelを使用）
@@ -311,16 +317,6 @@ class Display:
                     ch = '|'
             else:
                 ch = '+'
-        elif const.is_tunnel(tile):
-            ch = '#'
-        elif const.is_stairs(tile):
-            ch = '%'
-        elif const.is_trap(tile):
-            # 隠された罠は床として表示
-            if tile & const.HIDDEN:
-                ch = '.'
-            else:
-                ch = '^'
 
         self.mvaddch(row, col, ord(ch))
 
@@ -334,6 +330,16 @@ class Display:
         halluc = GameState.halluc > 0 if hasattr(GameState, 'halluc') else False
         logger.debug(f"draw_entities: cur_room={cur_room}, blind={blind}, halluc={halluc}")
 
+        # アイテムを描画（C版の優先順 MONSTER→OBJECTに合わせ怪より先）
+        obj_count = 0
+        obj = dungeon.level_objects
+        while obj:
+            if self.rogue_can_see(dungeon, player, cur_room, obj.row, obj.col, blind):
+                self.mvaddch(obj.row, obj.col, obj.ichar)
+                obj_count += 1
+            obj = obj.next_object
+
+        logger.debug(f"draw_entities: drew {obj_count} objects")
         # モンスターを描画
         mon_count = 0
         monster = dungeon.level_monsters
@@ -351,16 +357,6 @@ class Display:
                 self.mvaddch(monster.row, monster.col, ch)
             monster = monster.next_object
         logger.debug(f"draw_entities: drew {mon_count} monsters")
-        # アイテムを描画
-        obj_count = 0
-        obj = dungeon.level_objects
-        while obj:
-            if self.rogue_can_see(dungeon, player, cur_room, obj.row, obj.col, blind):
-                self.mvaddch(obj.row, obj.col, obj.ichar)
-                obj_count += 1
-            obj = obj.next_object
-
-        logger.debug(f"draw_entities: drew {obj_count} objects")
         # プレイヤーを描画
         self.mvaddch(player.row, player.col, player.fchar)
 
@@ -493,25 +489,13 @@ class Display:
         self.curses.beep()
 
     def save_screen(self, filename: str = "rogue.screen") -> None:
-        """画面をファイルに保存"""
+        """画面をファイルに保存 (C版 message.c: save_screen相当)"""
         try:
             with open(filename, 'w', encoding='utf-8') as fp:
                 for i in range(const.ROGUE_LINES):
-                    buf = []
-                    found_non_blank = False
-                    for j in range(const.ROGUE_COLUMNS - 1, -1, -1):
-                        ch = chr(self.mvinch(i, j))
-                        if not found_non_blank:
-                            if ch != ' ' or j == 0:
-                                if j == 0:
-                                    buf.append(ch)
-                                else:
-                                    buf.append(ch)
-                                    buf.append(' ')
-                                found_non_blank = True
-                        else:
-                            buf.insert(0, ch)
-                    fp.write(''.join(reversed(buf)) + '\n')
+                    # 右端の空白を刈って書き出す（C版の逆走トリムと等価）
+                    row = ''.join(chr(self.mvinch(i, j)) for j in range(const.ROGUE_COLUMNS))
+                    fp.write(row.rstrip() + '\n')
         except Exception:
             self.sound_bell()
 
@@ -570,10 +554,15 @@ class Display:
         """モンスターの表示文字を取得 (C版 monster.c: gmc_row_col / gmc)"""
         monster = self._object_at_monsters(dungeon_level, row, col)
         if monster:
+            # C版 gmc順: 不可視/blind → trail、IMITATES → disguise、else m_char
+            if ((not (GameState.detect_monster or GameState.see_invisible or
+                      getattr(GameState, 'r_see_invisible', 0)) and
+                    (monster.m_flags & const.INVISIBLE)) or GameState.blind):
+                return monster.trail_char
             if monster.m_flags & const.IMITATES:
                 return chr(monster.disguise) if hasattr(monster, 'disguise') else 'M'
             return chr(monster.ichar) if monster.ichar else 'M'
-        return 'M'
+        return '&'
 
     def _object_at_objects(self, level, row: int, col: int):
         """指定位置のアイテムを取得"""
@@ -645,13 +634,36 @@ class Display:
                 if not dungeon_level.is_valid_position(nr, nc):
                     continue
 
-                tile = dungeon_level.get_tile(nr, nc)
                 # C版: if (can_move(row, col, row+i, col+j))
-                if const.is_passable(tile):
+                if self._can_move_light(dungeon_level, row, col, nr, nc):
                     # 探索済みにセット
                     dungeon_level.dungeon[nr][nc] |= const.MAPPED
                     ch = self.get_dungeon_char(dungeon_level, nr, nc)
                     self.mvaddch(nr, nc, ord(ch))
+
+    @staticmethod
+    def _can_move_light(dungeon_level, r1: int, c1: int, r2: int, c2: int) -> bool:
+        """点灯用の移動可否 (C版 move.c: can_move相当)"""
+        try:
+            t2 = dungeon_level.get_tile(r2, c2)
+        except Exception:
+            return False
+        # is_passable相当（範囲内前提。HIDDENは罠のみ可）
+        if t2 & const.HIDDEN:
+            if not (t2 & const.TRAP):
+                return False
+        elif not (t2 & (const.FLOOR | const.TUNNEL | const.DOOR | const.STAIRS | const.TRAP)):
+            return False
+        if r1 != r2 and c1 != c2:
+            try:
+                t1 = dungeon_level.get_tile(r1, c1)
+                if (t1 & const.DOOR) or (t2 & const.DOOR):
+                    return False
+                if not dungeon_level.get_tile(r1, c2) or not dungeon_level.get_tile(r2, c1):
+                    return False
+            except Exception:
+                return False
+        return True
 
     def darken_room(self, dungeon_level, room_number: int, blind: bool) -> None:
         """部屋を暗くする (C版 room.c: darken_room)"""
@@ -871,16 +883,20 @@ class Message:
 
     def message(self, msg: str, intrpt: bool = False) -> None:
         """メッセージを表示（C言語版 message.c: message に対応）"""
+        # C版 message.c:40-46前置：割込指定時は割込順序を進める
+        if intrpt:
+            try:
+                GameState.interrupted = True
+            except Exception:
+                pass
         if not self.msg_cleared:
             # 前のメッセージが残っている場合は --more-- を表示
             self.display.mvaddstr(const.MIN_ROW - 1, self.msg_col, " ［続く］")
             self.display.clrtoeol()
             self.display.refresh()
             self._wait_for_ack()
-            # メッセージ行をクリア
-            self.display.move(const.MIN_ROW - 1, 0)
-            self.display.clrtoeol()
-            self.display.refresh()
+            # メッセージ行をクリア (C版 check_message相当)
+            self._check_message()
 
         # 新しいメッセージを表示
         self.msg_line = msg
@@ -971,9 +987,10 @@ class Stats:
         if stat_mask & const.STAT_HP:
             if label:
                 self.display.mvaddstr(row, 23, "HP:")
-                if player.hp_max > const.MAX_HP:
-                    player.hp_current -= (player.hp_max - const.MAX_HP)
-                    player.hp_max = const.MAX_HP
+            # C版: label外で無条件に丸める
+            if player.hp_max > const.MAX_HP:
+                player.hp_current -= (player.hp_max - const.MAX_HP)
+                player.hp_max = const.MAX_HP
             buf = f"{player.hp_current}({player.hp_max})"
             self.display.mvaddstr(row, 27, buf)
             self._pad(buf, 8)
@@ -982,9 +999,10 @@ class Stats:
         if stat_mask & const.STAT_STRENGTH:
             if label:
                 self.display.mvaddstr(row, 36, "Str:")
-                if player.str_max > const.MAX_STRENGTH:
-                    player.str_current -= (player.str_max - const.MAX_STRENGTH)
-                    player.str_max = const.MAX_STRENGTH
+            # C版: label外で無条件に丸める
+            if player.str_max > const.MAX_STRENGTH:
+                player.str_current -= (player.str_max - const.MAX_STRENGTH)
+                player.str_max = const.MAX_STRENGTH
             # C版: rogue.str_current + add_strength
             str_display = player.str_current + special_actions.add_strength
             buf = f"{str_display}({player.str_max})"
@@ -995,8 +1013,9 @@ class Stats:
         if stat_mask & const.STAT_ARMOR:
             if label:
                 self.display.mvaddstr(row, 48, "Arm:")
-                if player.armor and player.armor.d_enchant > const.MAX_ARMOR:
-                    player.armor.d_enchant = const.MAX_ARMOR
+            # C版: label外で無条件に丸める
+            if player.armor and player.armor.d_enchant > const.MAX_ARMOR:
+                player.armor.d_enchant = const.MAX_ARMOR
             buf = str(player.get_armor_class())
             self.display.mvaddstr(row, 53, buf)
             self._pad(buf, 2)
@@ -1009,12 +1028,16 @@ class Stats:
             self.display.mvaddstr(row, 61, buf)
             self._pad(buf, 11)
 
-        # 空腹状態
+        # 空腹状態 (C版: 無条件描画＋行末消去)
         if stat_mask & const.STAT_HUNGER:
             if self.message.hunger_str:
                 self.display.mvaddstr(row, 73, self.message.hunger_str)
             else:
                 self.display.mvaddstr(row, 73, " " * 7)
+            try:
+                self.display.clrtoeol()
+            except Exception:
+                pass
 
         self.display.refresh()
 
