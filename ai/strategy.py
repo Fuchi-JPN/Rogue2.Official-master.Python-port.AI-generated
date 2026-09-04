@@ -524,9 +524,8 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
         if d:
             return travel_action(obs, d, tgt, allow_run), "アイテムへ移動"
 
-    # S3: 回復待ち
-    if st.hp_cur < st.hp_max and risk.can_rest_safely:
-        return AIAction(type="rest"), "安全に回復待ち"
+    # S3: 回復待ちは最終手段の手前（移動中も自然回復するため、
+    # HP半分以下でも敵が見えなければ探索を続ける）
 
     # S4続き：hungry段階の食料探索
     if risk.hunger_level == "hungry":
@@ -561,6 +560,10 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
             return travel_action(obs, d, obs.stairs_pos, allow_run), "階段へ接近"
         if obs.player_pos == obs.stairs_pos:
             return AIAction(type="descend"), "階段を降りる"
+
+    # S3: 回復待ちは最終手段（他にすることがなければ休む）
+    if st.hp_cur < st.hp_max and risk.can_rest_safely:
+        return AIAction(type="rest"), "安全に回復待ち"
 
     return AIAction(type="rest"), "安全策で待機"
 

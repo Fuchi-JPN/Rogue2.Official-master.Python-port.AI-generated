@@ -57,7 +57,19 @@ class TestStrategy(unittest.TestCase):
         self.assertEqual(act.type, "move")
 
     def test_rest_when_hurt_and_safe(self):
+        # 減HPでも探索先があれば探索継続（回復は移動中に進む）
         obs = _obs(hp_cur=8, hp_max=12)
+        risk = strategy.assess(obs)
+        act, _ = strategy.decide(obs, risk, IdentifyMemo(), [])
+        self.assertIn(act.type, ("move", "run"))
+
+    def test_rest_as_last_resort(self):
+        # 他にすることがなければ回復待ち
+        obs = _obs(hp_cur=8, hp_max=12)
+        for k in list(obs._tile_cache.keys()):
+            obs._tile_cache[k] = const.VERTWALL
+        obs._tile_cache[(10, 10)] = const.FLOOR
+        obs.stairs_pos = None
         risk = strategy.assess(obs)
         act, _ = strategy.decide(obs, risk, IdentifyMemo(), [])
         self.assertEqual(act.type, "rest")
