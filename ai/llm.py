@@ -108,7 +108,8 @@ def build_strategy_section() -> str:
     "If the room has no items and no enemies, head to the visible door (+) into the next room instead of wandering.\n"
     "9. Corridors: once on a passage (#), keep your Previous-move heading (same direction); "
     "at junctions take the deeper branch (longer straight ray; tie goes left), never go back the way you came. "
-    "While committed to a passage, ignore items/doors/stairs BEHIND you; only forward goals count. "
+    "While committed to a passage, ignore items/doors/stairs BEHIND you unless they are in unvisited territory "
+    "(unexplored side rooms are worth a detour); only forward goals count otherwise. "
     "Reach the dead end first; if no door there, search. "
     "Make for the next + door. Do not reverse without reason (fighting/fleeing/adjacent pickup only).\n"
     "   After passing through a door (+), NEVER turn back into the room you came from: "
@@ -131,6 +132,8 @@ def build_strategy_section() -> str:
 SYSTEM_PROMPT = (
     "You are an autonomous player of a classic roguelike (Rogue clone, Japanese UTF-8 version).\n"
     "Goal: survive as long as possible and descend to deeper floors. Dying ends the run.\n\n"
+    "PRIORITY (strict order): visible items first, then doors/passages, then stairs last. "
+    "%% (stairs) is NOT an item: never pick it up, descend with the descend action only after clearing.\n\n"
     + build_strategy_section() +
     "\nSYMBOL LEGEND (screen and lists use exactly these):\n"
     "Terrain: -=horizontal wall, |=vertical wall, .=room floor, #=passage, +=door, %=stairs, ^=trap.\n"
@@ -454,6 +457,7 @@ class LLMAgentPolicy:
             self.last_fallback = True
             return act, reason + "（scripted固定）"
         self.memory.update(obs)
+        obs._visited = self.memory.visited
         obs.unopened_doors = self.memory.ordered_unopened(obs)
         obs.search_count = self.memory.search_count_at(obs.player_pos)
         risk = strategy.assess(obs)

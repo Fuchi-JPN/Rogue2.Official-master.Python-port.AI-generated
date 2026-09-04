@@ -159,6 +159,15 @@ class TestStrategy(unittest.TestCase):
         self.assertTrue(strategy.committed_to_passage(obs, "l"))
         pts = [(10, 8), (10, 12), (9, 10)]
         self.assertEqual(strategy.forward_filter(obs, "l", pts), [(10, 12), (9, 10)])
+
+    def test_forward_filter_unvisited_detour(self):
+        # 後方でも未踏破なら寄り道対象に残す。踏破済み後方は除外
+        obs = self._tunnel_obs(pos=(10, 10))
+        pts = [(10, 8), (10, 12)]
+        self.assertEqual(sorted(strategy.forward_filter(obs, "l", pts, {(10, 10), (10, 8)})),
+                         [(10, 12)])
+        self.assertEqual(sorted(strategy.forward_filter(obs, "l", pts, set())),
+                         [(10, 8), (10, 12)])
         # 非通路では素通し
         obs2 = _obs(pos=(10, 10))
         self.assertEqual(strategy.forward_filter(obs2, "l", pts), pts)
@@ -356,6 +365,18 @@ class TestStrategy(unittest.TestCase):
         risk = strategy.assess(obs)
         act, _ = strategy.decide(obs, risk, IdentifyMemo(), [])
         self.assertIn(act.type, ("move", "run"))
+
+    def test_through_door_step(self):
+        # 未開扉上に立つ→素通り方向を返す（向き優先）
+        obs = self._tunnel_obs(pos=(10, 10))
+        obs._tile_cache[(10, 10)] = const.DOOR | const.TUNNEL
+        obs.unopened_doors = [(10, 10)]
+        self.assertEqual(strategy.through_door_step(obs, "l"), "l")
+        # 向き不明でも前進候補を返す
+        self.assertIn(strategy.through_door_step(obs, None), ("h", "j", "k", "l"))
+        # 未開扉上でなければNone
+        obs.unopened_doors = []
+        self.assertIsNone(strategy.through_door_step(obs, "l"))
 
     def test_stairs_suppressed_with_unopened(self):
         # 減HP（瀕死でない）＋未開扉→階段へ向かわない
