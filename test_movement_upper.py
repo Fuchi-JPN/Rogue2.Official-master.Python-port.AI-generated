@@ -52,6 +52,31 @@ class TestRunCommand(unittest.TestCase):
         mai.put_mons()  # ハングせず復帰すること
         self.assertGreater(len(dung.monsters), 0)
 
+    def test_door_no_afterimage(self):
+        # 扉上のtrail_charは'+'（怪物文字の残像防止）
+        import const as _const
+        from combat import MonsterAI
+        from entities import Monster
+        utils.set_random_seed(1)
+        dung = dungeon_mod.DungeonLevel(level=1)
+        level_gen.LevelGenerator(dung).make_level()
+        p = entities.Player()
+        p.row, p.col = 10, 10
+        mai = MonsterAI(p, dung)
+        door = None
+        for r in range(_const.MIN_ROW, _const.ROGUE_LINES - 1):
+            for c in range(_const.ROGUE_COLUMNS):
+                if dung.dungeon[r][c] & _const.DOOR:
+                    door = (r, c)
+                    break
+            if door:
+                break
+        self.assertIsNotNone(door)
+        m = Monster()
+        m.m_flags = _const.WAKENS
+        mai.put_m_at(door[0], door[1], m)
+        self.assertEqual(m.trail_char, '+')
+
 
 if __name__ == "__main__":
     unittest.main()

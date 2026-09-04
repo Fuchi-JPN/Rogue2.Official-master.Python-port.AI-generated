@@ -1167,11 +1167,13 @@ class MonsterAI:
             return True
         return False
 
-    def _get_dungeon_char(self, row: int, col: int) -> str:
+    def _get_dungeon_char(self, row: int, col: int, ignore_monster: bool = False) -> str:
         """指定位置のダンジョン文字を取得 (C版 mvinch_rogue相当)"""
         tile = self.dungeon.get_tile(row, col)
-        
-        if tile & const.MONSTER:
+
+        # trail_char取得時はMONSTERビットを無視する（素の地形文字。
+        # さもないと怪物文字が残像として残る）
+        if tile & const.MONSTER and not ignore_monster:
             monster = self._monster_at(row, col)
             if monster:
                 return monster.m_char if hasattr(monster, 'm_char') else 'M'
@@ -1232,7 +1234,8 @@ class MonsterAI:
                         self.display.mvaddch(mrow, mcol, ord(tc) if isinstance(tc, str) else tc)
 
         # C版: monster->trail_char = mvinch_rogue(row, col);
-        monster.trail_char = self._get_dungeon_char(row, col)
+        # mvinchは配置前の画面を読むためMONSTERビットを無視する
+        monster.trail_char = self._get_dungeon_char(row, col, ignore_monster=True)
 
         # C版: if (!blind && (detect_monster || rogue_can_see(row, col)))
         if not GameState.blind and (self.detect_monster or self._rogue_can_see(row, col)):
@@ -1398,7 +1401,8 @@ class MonsterAI:
         monster.col = col
         self.dungeon.dungeon[row][col] |= const.MONSTER
         # C版: monster->trail_char = mvinch_rogue(row, col);
-        monster.trail_char = self._get_dungeon_char(row, col)
+        # 配置後のためMONSTERビットを無視して素の地形文字を取る
+        monster.trail_char = self._get_dungeon_char(row, col, ignore_monster=True)
         # 両方のリストに追加（C言語版互換）
         self.dungeon.monsters.append(monster)
         # level_monsters連結リストの先頭に追加
