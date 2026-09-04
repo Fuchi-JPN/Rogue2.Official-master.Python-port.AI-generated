@@ -1,0 +1,176 @@
+# AI自律プレイ機能 — 実装レポート
+
+| 項目 | 内容 |
+|---|---|
+| 対応設計書 | `python/docs/rogue2-ai-autoplay-addon-design.md` v1.1（§5.4攻略ロジック・§6.5プロンプト含む） |
+| 実施日 | 2026-09-04 |
+| 方針 | 操作は全自動・人間は実画面で観察。既定LLMは OpenRouter `inception/mercury-2.5-preview` |
+
+## 新規ファイル（`python/ai/`）
+
+| ファイル | 内容（設計書対応） |
+|---|---|
+| `__init__.py` | パッケージ標識のみ（循環import防止のためeager importなし） |
+| `schemas.py` | AIObservation／AIStatus／AIAction／IdentifyMemo／RiskAssessment／AIOptions（§3.2 §4.1 §5.3 §5.4.3） |
+| `observer.py` | 内部状態→観測。画面パースなし（§3）。`build_observation`（テスト用正本）＋`build_from_game`（本番経路） |
+| `strategy.py` | 攻略ロジック正本：閾値・assess()・S0〜S8 decide()・BFS・振動検知（§5.4） |
+| `policies.py` | Policy抽象＋ScriptedPolicy（strategy駆動）（§5.1） |
+| `llm.py` | urllibのみのChatClient＋LLMAgentPolicy＋strategy定数からの文面機械生成（§6 §6.5） |
+| `actuator.py` | 行動→キー列＋禁止キー検証（§4）。fightは`f`＋方向、投擲等は後続キー付き |
+| `input_hook.py` | AIキーキューの一元管理。本体・AI双方から参照（他依存なし） |
+| `driver.py` | 運転統括：介入キー・一時停止/単歩/速度/手動・リプレイ・停滞検知・JSONL・ヘッドレススモーク（§7 §9） |
+| `monitor.py` | 最終行1行オーバーレイ＋介入キー定義（§7） |
+| `session_log.py` | JSONL記録・リプレイ読込・差分検知（簡易版）（§9） |
+
+## 本体改変（最小差分・入力層のみ）
+
+| # | 箇所 | 内容 |
+|---|---|---|
+| M1 | `main.py` | `--ai`等10引数＋`_build_ai_options`（CLI＞環境変数＞既定値）＋`--ai-headless`分岐。`parse_args(argv=None)`化（test_mainの既存不整合も解消） |
+| M2 | `game.py __init__` | `ai_options`引数＋`ai_driver`＋`_movement`保持を追加 |
+| M3 | `game.py _play_level` | 先頭で`_maybe_start_ai()`（遅延・冪等）。`movement`を`self._movement`に保持 |
+| M4 | `game.py _get_input` | AI運転中は`driver.next_key()`へ委譲、従来本体は`_get_input_manual()`に改名（全8呼出元は自動追従） |
+| M5 | turn通知 | `_play_level`改変なしで代替：driverがキー供給時に観測・記録を実施 |
+| H1 | `display.py getch` | AIキュー優先参照 |
+| H2 | `inventory.py _getchar` | AIキュー優先参照 |
+| H3 | `special_actions.py` 4箇所 | `curses.getch()`直呼び→`_ai_aware_getch()`（方向・スロット選択の後続入力） |
+| H4 | `game.py` UseActions 3箇所 | `display/message/game`受け渡し（消費時のC正規reg_move tickを有効化） |
+
+ゲームルール・描画規則・定数の変更なし。
+
+## テスト
+
+| テスト | 件数 | 結果 |
+|---|---|---|
+| `test_ai_strategy`（S0〜S8分岐・空腹段階・BFS） | 10 | OK |
+| `test_ai_actuator`（変換・禁止キー） | 7 | OK |
+| `test_ai_llm`（文面生成・JSON解釈・フォールバック固定化） | 5 | OK |
+| `test_ai_observer`（観測・介入キー・リプレイ・headless） | 6 | OK |
+| `test_zero_base_regression`（既存） | 9 | OK |
+| `test_main`（既存、argv化で復活） | 1 | OK |
+| headless smoke 150手 | — | 完走（HP12/12維持、空腹tick正常） |
+| `tests/test_const` 7件失敗 | — | 事前不整合（`ROGUE_LINES`期待23≠実装24等、`const.py`未改変のため無関係） |
+
+## 設計書からの軽微な具体化（仕様変更ではない）
+
+- `mode=need_confirm` は未使用（確認発生行動はそもそも送出しない方針のため）。
+- 差分検知は簡易版（移動→不動の想定外のみ）。本格版はPhase A2の課題として残す。
+- 可視モンスター／アイテムは自機半径10マスに限定（fog-of-warの簡易近似）。
+- `--ai-headless` はGame.run()経由ではなくdriver内スモークハーネス（Player/Dungeon/Movement直駆動）で実現。curses初期化スキップ・描画なし・高速の要件は満たす。
+
+## 使い方
+
+```bash
+python -m python.main --ai --ai-provider scripted        # ルールベース実画面プレイ
+export OPENROUTER_API_KEY="sk-or-..."; python -m python.main --ai   # 既定LLM
+python -m python.main --ai --ai-headless --ai-max-turns 500         # 高速回帰
+```
+
+操作：space停止／s単歩／+-速度／m手動／q運転終了（Qはゲーム終了・そのまま通す）。
+
+## 追補：強制終了キー `X`
+
+- `X`押下で即時プロセス終了（セーブ・スコア記録なし）。確認待ち（`Message._wait_for_ack`）のブロッキング中も有効で、待ちを解いてフラグを立て、次の`_get_input`で`ForceQuit`として終了する（`run()`の例外捕捉＋`finally`の`_clean_up`で端末復帰）。
+- 手動モード中も有効。方向・選択プロンプト（`_get_input`経由）は横取り対象のため有効。
+- AIの`X`送出はActuatorの禁止キー検証で拒否（テスト済み）。
+- 対象外：死亡画面の待機・インベントリオーバーレイ表示中の直接待機（AI到達外のため）。
+
+## 追補2：LLM接続失敗の原因表示
+
+- `llm.classify_error()` が失敗原因を特定（タイムアウト／HTTP 401・402・404・429・5xx／DNS／接続拒否／SSL／応答形式異常／行動形式不正）。HTTPコードは`ChatClient`が例外に保持して伝達する。
+- `LLMAgentPolicy` は失敗時に `last_error` へ原因を格納し、思考メモを `LLM接続失敗[原因]→scripted継続` 形式で返す。
+- ドライバは初発時にセッションログへ原因を記録し、回復までオーバーレイ状態欄へ `LLM×:原因` を常時表示する（例：`LLM×:401認証失敗（APIキー無効・期限切れ・provider不一致）`）。APIキー未設定時は `APIキー未設定→scripted走行` を表示。
+- ゲームのメッセージ行は汚さない（確認待ちのブロッキングを誘発するため）。表示はオーバーレイ＋JSONLに限定。
+
+## 追補3：LLM接続失敗はフォールバックせず終了（fail-fast）
+
+- 経緯：フォールバック継続では失敗に気づけないとの指摘。既定動作を変更した。
+- `LLMAgentPolicy` は失敗時に `LLMConnectionError`（原因＋モデル・endpoint・対処ヒント入り）を送出する。`AIDriver` は飲み込まず上位へ伝播させ、`Game.run()` の例外捕捉＋`finally`の`_clean_up`で端末復帰後にエラーメッセージを表示して終了する（終了コード1）。
+- APIキー未設定でLLM系provider指定時も起動時に即終了（`OPENROUTER_API_KEY（またはOPENAI_API_KEY）を設定してください`）。
+- 旧来の継続動作が必要な場合のみ `--ai-llm-fallback`（または`ROGUE_AI_LLM_FALLBACK=1`）でscripted継続に戻せる。その場合の原因表示は追補2の通り。
+
+## 追補4：length打切り対策（curl再現で確定）
+
+- curl再現の結果：`keys=[content,reasoning,refusal,role]`、`finish=length`、`content=None`。mercuryが512トークンをreasoningで使い切り、本文到達前に打ち切られていた。
+- `max_tokens`既定を512→2048→4096に引き上げ。`--ai-max-tokens`／`ROGUE_AI_MAX_TOKENS`で調整可。`finish_reason=length`時は専用の原因文（`--ai-max-tokens`増加指示）を表示する。
+
+## 追補5：推論文ティッカー
+
+- LLM応答の`reasoning`フィールドを`last_reasoning`として保持し、ステータス行の下にティッカー表示する。
+- 端末高さが25行以上あれば25行目に専用行（全幅スクロール、約8文字/秒）。24行ちょうどの場合はオーバーレイ行内に28文字分を埋め込む。
+- Scripted時は思考メモ（reason相当）を流す。停止・終了時は専用行を消去する。
+- 追補：全角混じり行の折り返し対策として表示幅基準の切り詰めに変更。
+
+## 追補6：全文記録と行動合理化
+
+- 全文記録：毎手のsystem/user全文＋生応答＋reasoningを`ai_trace.jsonl`へ記録（`--ai-trace`／`ROGUE_AI_TRACE`で変更、`--ai-no-trace`で無効化）。
+- 合理化1：観測に`Legal moves`（通過可能方向のみ）を追加し、SYSTEMルール第7条「壁方向へ動くな」で指示。
+- 合理化2：ドライバがLLMの壁方向moveを検出したらscripted判断に差し替え（`（壁手補正）`付き・補正回数を計数）。
+
+## 追補7：拾得の最優先化
+
+- 敵隣接なし限り、可視アイテムへの移動・足元の拾得を回復・降下より上位に変更（S5をS3/S6の前へ）。LLMルールにも「拾得優先の例外」を追加。設計書§5.4.2表も同順に更新。
+
+## 追補8：trace分析に基づく経路改善（94手分析）
+- 分析結果：`reasoning`は全94手で空（mercuryは推論過程を返さない）。移動は階段への貪欲1手選択で、壁際張り付きと3マス振動（T32-41で壁角の到達不能品を追って往復）を起こしていた。
+- 対策1：`strategy.route_hint()`（BFS最短路の次の一手。階段到達可→階段、不可→最寄り扉）を観測の`Shortest-path hint`＋`Doors`一覧としてLLMへ提示し、SYSTEM第8条「ヒントに従い、用がなければ扉(+)から次室へ」で指示。
+- 対策2：停滞検知を複合シグネチャの12手窓・異種3以内で判定（空腹・文言は除外し、回復・戦闘の誤検知を回避）。3マス振動も検知する。
+
+## 追補9：画面ダンプ全文のLLM添付
+
+- 毎手の観測時に`Display.dump_screen()`で80x24全文を取得し、user prompt末尾へ`Full screen dump`ブロックとして添付（凡例＋「構造化欄が正・ダンプは位置関係用」の注記付き）。
+- `ai_trace.jsonl`の`user`にも同ダンプが残るため、モデルが見た画面の事後確認が可能。
+- トークン節約時は`--ai-no-screen`／`ROGUE_AI_SCREEN=0`で無効化。
+
+## 追補10：鎧グリフ`[`誤表示と凡例欠落の修正
+
+- 本体バグ：`Game._put_objects`が防具の地上文字に`ord('[')`を設定（C正規は`']'`）。描画が`ichar`直書きのため鎧が`[`で表示されていた。`ord(']')`に修正。
+- 観測の堅牢化：`observer._ground_glyph()`は実表示文字を優先し、未知文字のみ正規表へフォールバック（将来の不一致を自己修復）。
+- LLMの文字把握：SYSTEMへグリフ凡例（地形・品目・ unit）を追加。モデルがRogue流儀を推測する必要をなくした。
+
+## 追補11：通行可否の明示と斜めドア角規則の再現
+
+- 凡例へPASSABLE（`. # + %`＋品目）／BLOCKED（`- |`空白）／罠注意・階段`descend`要・怪物は`fight`を明記。
+- ログ末尾T30-37で8手連続不動を特定：`n`斜め移動が本体`_can_move`のドア角・空虚角規則で弾かれ続けていた。`legal_moves`・BFS双方に同規則を再現し、ヒント・検証・探索が本体と一致。
+
+## 追補12：通路追従（進行方向の記憶）
+
+- `strategy.corridor_step()`：通路（`#`）上で前手方向へ直進、直進不可かつ左右いずれか一方のみ開通ならそちらへ。分岐・袋小路・非通路は通常判断へ委譲。
+- 進行方向の記憶：Scriptedは自决策から、LLMは実行手から`heading`を更新。プロンプトへ`Previous move（heading＋羅針盤名）`を提示し、SYSTEM第9条「通路では向きを維持し左右の`#`だけ曲がって次の`+`へ」で指示。
+- 純粋な通路状況でのLLM逸脱はドライバが直進に補正（`（通路追従）`付き）。近接敵・至近品・足元階段がある場合は通常判断を尊重。
+
+## 追補13：未開扉の踏破優先（降下は全室踏破後）
+
+- `strategy.ExplorationMemory`：踏破タイルと通過扉を階層ごとに記憶。扉タイルを踏んだら開封済み、階層変化でリセット。
+- ScriptedはS6で未開扉が残っていれば最寄り扉へ（餓死寸除く）。LLMへは`Unopened doors`一覧＋SYSTEM第10条「降下前に全室踏破」で指示し、`route_hint`も未開扉を最優先。
+
+## 追補14：全自動の穴の封鎖（追加入力の横取り・確認待ち停止）
+
+- 症状：`f`送信後の方向待ち（どちらと戦いますか？）に次手キーが横取りされ、意図せぬ戦闘方向になる。`［続く］`確認待ちで人間待ち停止。
+- 対策1：`next_key`で追加入力キューの後続キーを新規判断より優先供給。
+- 対策2：AI運転中は`Message._wait_for_ack`を自動承認（`input_hook.auto_ack`。後続入力は消費せず残す）。手動・停止時は従来通り。
+
+## 追補15：扉通過後の逆戻り禁止（通路継続の扉マス拡張）
+
+- 症状：扉を開けた直後に部屋へ戻る傾向。原因は`corridor_step`が通路（`#`）のみ対象で、扉（`+`）マス上では通常判断（部屋側の品目等）に流れたため。
+- 対策：`corridor_step`・ドライバ補正を扉マスにも拡張し、来た方向へのUターンを選ばない。SYSTEM第9条へ「扉通過後は次の扉まで通路を進む（戦闘・退避・隣接拾得除く）」を追記。
+
+## 追補16：モデルJSON崩れの再試行
+
+- 症状：`Expecting ',' delimiter`等の応答JSON不正で即終了。mercuryが日本語`reason`等に崩れを混ぜることがある。
+- 対策：`_complete_with_retry()`で通信失敗は即送出、parse失敗のみ既定2回再試行（成功すれば継続）。使い果たし時のみ原因付き終了。分類文も`delimiter`対応。
+
+## 追補17：降下は可視の全扉を開けてから
+
+- 要望により降下優先度を引き下げ。未開判定を階層全体から**表示中の扉**に変更（`unopened_visible`）。見えている扉を全て開けて部屋に入ってから階段へ（餓死寸除く）。プロンプト・ヒント・S6とも同基準。
+
+## 追補18：行き止まりの隠し扉探索（最大10手）
+
+- 通路・扉上で進行不能・敵なし・空腹余裕ありの場合、`s`探索を最大10手実施して隠し扉の出現を待つ（`ExplorationMemory`で手数管理・階層替りリセット）。10手不発で打ち切り記憶し通常判断へ復帰。
+- ScriptedはS5c、LLMはSYSTEM第11条＋残り手数表示＋ドライバ補正（`（隠し扉探索）`付き）で統一。
+
+## 追補19：高速移動（連続移動キー）の優先利用
+
+- 移動が3マス以上の直線路の場合、1歩ずつではなく大文字キー（H,J,K,L,Y,U,B,N＝ぶつかるまで連続移動）を使う。LLM問い合わせ回数を削減する。
+- `strategy.travel_action()`：遠方目標＋直線路／通路直進で`run`に格上げ。Scriptedの7箇所・LLM（SYSTEM第12条＋`run`型）・ドライバ格上げ（ヒント一致時、`（高速移動）`付き）に適用。`raw_keys`経由の大文字は引き続き禁止。
+- 追補20：本体側で大文字が未実装だった（`is_direction`が小文字のみ→「不明なコマンド」）。C準拠で大小両対応に修正し、`test_movement_upper`で回帰化。

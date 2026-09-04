@@ -1,0 +1,5 @@
+# Rogue2.Official Python 移植 - 依存関係
+
+# Windows用 cursesライブラリ
+# Windows以外の環境では標準のcursesを使用
+windows-curses>=2.0.1; platform_system == "Windows"
