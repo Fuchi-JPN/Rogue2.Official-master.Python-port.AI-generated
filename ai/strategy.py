@@ -149,6 +149,12 @@ class ExplorationMemory:
         if corridor_step(obs, heading) is not None:
             self.search_counts.pop(pos, None)
             return False
+        # 引き返し以外の選択肢があれば行き止まりではない（向き直しで解決）
+        back = REVERSE_OF.get(heading)
+        fresh = [d for d in legal_moves(obs) if d != back]
+        if fresh:
+            self.search_counts.pop(pos, None)
+            return False
         for m in obs.visible_monsters:
             if max(abs(m["pos"][0] - pos[0]), abs(m["pos"][1] - pos[1])) <= 1:
                 return False

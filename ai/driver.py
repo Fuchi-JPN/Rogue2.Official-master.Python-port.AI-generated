@@ -340,6 +340,13 @@ class AIDriver:
             input_hook.push_keys("".join(rest))
         self._set_ticker(getattr(self.policy, "last_reasoning", "") or thought)
         self._finish_turn(obs, action, thought, keys, latency_ms, fallback)
+        # 行き止まり探索中は停滞検知を止める（予算10手が上限のため）
+        try:
+            if action.type == "search" and "隠し扉探索" in thought:
+                self._stuck_count = 0
+                self._sig_window = []
+        except Exception:
+            pass
         # 進行方向の記憶（次手の通路追従・heading表示用）
         try:
             if action.type == "move" and action.direction:

@@ -262,6 +262,23 @@ class TestStrategy(unittest.TestCase):
         obs = self._tunnel_obs()
         self.assertIsNone(mem.deadend_action(obs, "l"))
 
+    def test_deadend_only_back_option_searches(self):
+        # 引き返し以外の選択肢がなければ探索（10手後に向き直し）
+        mem = strategy.ExplorationMemory()
+        obs = self._deadend_obs()
+        obs._tile_cache[(10, 11)] = const.TUNNEL  # 東のみ開通
+        act = mem.deadend_action(obs, "h")  # 向きは西のまま
+        self.assertIsNotNone(act)
+        self.assertEqual(act.type, "search")
+
+    def test_deadend_skipped_when_fresh_option(self):
+        # 引き返し以外の選択肢が2つ以上あれば行き止まりではない
+        mem = strategy.ExplorationMemory()
+        obs = self._deadend_obs()
+        obs._tile_cache[(10, 11)] = const.TUNNEL
+        obs._tile_cache[(9, 10)] = const.TUNNEL
+        self.assertIsNone(mem.deadend_action(obs, "h"))
+
 
 if __name__ == "__main__":
     unittest.main()
