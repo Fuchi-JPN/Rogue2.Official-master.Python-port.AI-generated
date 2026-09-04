@@ -109,8 +109,9 @@ def build_strategy_section() -> str:
     "Make for the next + door. Do not reverse without reason (fighting/fleeing/adjacent pickup only).\n"
     "   After passing through a door (+), NEVER turn back into the room you came from: "
     "keep going through the passage until the next door, unless fighting, fleeing, or picking an adjacent item.\n"
-    "10. Clear the visible area first: while visible Unopened doors remain, visit them before descending "
-    "(unless food counter is weak/faint). Open every door you can see, enter each room, then take the stairs.\n"
+    "10. Clear the visible area first: while visible Unopened doors remain, NEVER head for the stairs "
+    "unless you are dying (HP below 15%% of max, or food counter weak/faint). "
+    "Open every door you can see, enter each room, then take the stairs.\n"
     "11. Dead ends: if you are on a passage/door with nowhere to go, use search (up to 10 times) "
     "to reveal hidden doors. The prompt shows Dead-end searches so far.\n"
     "12. Prefer run over move for travel of 3+ tiles in a straight clear line "
@@ -155,6 +156,8 @@ def format_observation(obs: AIObservation, risk, memo: IdentifyMemo, history_sum
         s["slot"], s["type"], s["qty"],
         "[" + ",".join(s["equip"]) + "]" if s["equip"] else "") for s in obs.inventory_summary) or "empty"
     legal = "".join(strategy.legal_moves(obs)) or "none (rest/search only)"
+    adj = strategy.adjacent_enemy_dirs(obs)
+    adj_txt = ", ".join("%s=%s" % (d, g) for d, g in sorted(adj.items())) or "none"
     unopened = getattr(obs, "unopened_doors", None) or []
     unopened_txt = ", ".join(str(tuple(p)) for p in unopened[:12]) or "none (visible area cleared)"
     heading_txt = ("none (no previous move)"
@@ -177,6 +180,7 @@ def format_observation(obs: AIObservation, risk, memo: IdentifyMemo, history_sum
         "Legal moves (passable tiles only, never bump walls): %s.\n"
         "Shortest-path hint (follow it for movement unless fighting/fleeing): %s.\n"
         "Visible monsters: %s. Visible items: %s.\n"
+        "Adjacent enemies by fight direction (use exactly this): %s.\n"
         "Status effects: %s. Message: \"%s\".\n"
         "Inventory: %s. Identified: potions %s, scrolls %s.\n"
         "Recent history: %s.\n"
@@ -191,7 +195,7 @@ def format_observation(obs: AIObservation, risk, memo: IdentifyMemo, history_sum
            getattr(obs, "search_count", 0),
            heading_txt,
            legal, hint,
-           mons, items, obs.flags or "none", obs.message or "",
+           mons, items, adj_txt, obs.flags or "none", obs.message or "",
            inv, memo.potion or "{}", memo.scroll or "{}",
            history_summary or "none", _screen_block(obs))
     )

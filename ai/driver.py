@@ -307,6 +307,12 @@ class AIDriver:
             action, thought = corr3
             thought = thought + "（隠し扉探索）"
             self.corrections += 1
+        # 戦闘方向の補正：誤方向は正方向へ、隣接なしは接近へ
+        corr4 = self._guard_fight(obs, action)
+        if corr4 is not None:
+            action, thought = corr4
+            thought = thought + "（攻撃修正）"
+            self.corrections += 1
         # 高速移動への格上げ：最短路ヒント通りのmoveはrunにする。
         # 往復振動中は封印する（扉踏破の確実化）
         if action.type == "move" and action.direction:
@@ -446,6 +452,30 @@ class AIDriver:
             d = strategy.corridor_step(obs, heading)
             if d and d != action.direction:
                 return AIAction(type="move", direction=d), "通路を直進"
+            return None
+        except Exception:
+            return None
+
+    def _guard_fight(self, obs, action):
+        """戦闘方向の検証・補正。不要ならNone"""
+        try:
+            if action.type != "fight":
+                return None
+            corr = strategy.fight_correction(obs, action.direction)
+            if corr is not None:
+                if corr == action.direction:
+                    return None
+                return AIAction(type="fight", direction=corr), "正方向へ攻撃"
+            # 隣接敵なし→最寄りの可視敵へ接近する
+            mons = getattr(obs, "visible_monsters", None) or []
+            if not mons:
+                return None
+            pr, pc = tuple(obs.player_pos)
+            tgt = min(mons, key=lambda m: max(abs(m["pos"][0] - pr),
+                                             abs(m["pos"][1] - pc)))["pos"]
+            d = strategy._first_step_toward(obs, tuple(tgt))
+            if d:
+                return AIAction(type="move", direction=d), "敵へ接近"
             return None
         except Exception:
             return None

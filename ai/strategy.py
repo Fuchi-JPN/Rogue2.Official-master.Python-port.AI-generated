@@ -86,6 +86,13 @@ def hunger_level(moves_left: int) -> str:
     return "ok"
 
 
+def is_dying(obs: AIObservation) -> bool:
+    """瀕死判定：HP僅少または餓死寸前。階段退避の例外条件"""
+    st = obs.status
+    hp_ratio = (st.hp_cur / st.hp_max) if st.hp_max > 0 else 1.0
+    return hp_ratio < HP_CRITICAL or st.moves_left <= HUNGER_URGENT
+
+
 # 進行方向の記憶用：8方向の羅針盤名と左右関係
 COMPASS = {
     'h': 'west', 'j': 'south', 'k': 'north', 'l': 'east',
@@ -428,7 +435,7 @@ def route_hint(obs: AIObservation):
     なければ階段到達可→階段、不可→到達可能な最寄り扉、の順。
     """
     unopened = getattr(obs, "unopened_doors", None) or []
-    if unopened and obs.status.moves_left > HUNGER_URGENT:
+    if unopened and not is_dying(obs):
         tgt = min(unopened, key=lambda p: _dist(obs.player_pos, tuple(p)))
         d = _first_step_toward(obs, tuple(tgt))
         if d:
@@ -527,14 +534,15 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
         if act:
             return act
 
-    # S6: 階段へ（未開の扉が残っていれば扉優先。餓死寸除く）
+    # S6: 階段へ（未開の扉が残っていれば扉優先。瀕死のみ例外）
     unopened = getattr(obs, "unopened_doors", None) or []
-    if unopened and risk.hunger_level not in ("weak", "faint"):
+    dying = is_dying(obs)
+    if unopened and not dying:
         tgt = min(unopened, key=lambda p: _dist(obs.player_pos, tuple(p)))
         d = _first_step_toward(obs, tuple(tgt))
         if d:
             return travel_action(obs, d, tgt, allow_run), "未開の扉へ"
-    if risk.should_descend and obs.stairs_pos:
+    if risk.should_descend and obs.stairs_pos and (not unopened or dying):
         d = _first_step_toward(obs, obs.stairs_pos)
         if d:
             return travel_action(obs, d, obs.stairs_pos, allow_run), "階段へ移動"
@@ -546,8 +554,8 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
     if d:
         return AIAction(type="move", direction=d), "未踏破方向へ探索"
 
-    # S6最終：階段が見えていれば接近（HP満タンでなくても居座り回避）
-    if obs.stairs_pos:
+    # S6最終：未開扉なし・または瀕死の場合のみ階段へ接近
+    if obs.stairs_pos and (not unopened or dying):
         d = _first_step_toward(obs, obs.stairs_pos)
         if d:
             return travel_action(obs, d, obs.stairs_pos, allow_run), "階段へ接近"
@@ -575,6 +583,33 @@ def _adjacent_monster_dir(obs: AIObservation):
                 if (ddr, ddc) == (dr, dc):
                     return d
     return "h"
+
+
+def adjacent_enemy_dirs(obs: AIObservation) -> dict:
+    """隣接敵の方向→グリフ対応表（攻撃方向の正本）"""
+    pr, pc = tuple(obs.player_pos)
+    out = {}
+    for m in obs.visible_monsters:
+        try:
+            mr, mc = m["pos"]
+        except Exception:
+            continue
+        dr, dc = mr - pr, mc - pc
+        if max(abs(dr), abs(dc)) == 1 and (dr, dc) != (0, 0):
+            for d, (ddr, ddc) in DIR_DELTA.items():
+                if (ddr, ddc) == (dr, dc) and d not in out:
+                    out[d] = m.get("glyph", "?")
+    return out
+
+
+def fight_correction(obs: AIObservation, direction):
+    """戦闘方向の検証・補正。隣接敵なし→None、正方向→それ以外は補正"""
+    adj = adjacent_enemy_dirs(obs)
+    if not adj:
+        return None
+    if direction in adj:
+        return direction
+    return sorted(adj.keys())[0]
 
 
 def _retreat_direction(obs: AIObservation):

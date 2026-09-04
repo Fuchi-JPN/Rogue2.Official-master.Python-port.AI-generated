@@ -249,6 +249,42 @@ class TestStrategy(unittest.TestCase):
         act, _ = strategy.decide(obs, risk, IdentifyMemo(), [])
         self.assertIn(act.type, ("move", "run"))
 
+    def test_stairs_suppressed_with_unopened(self):
+        # 減HP（瀕死でない）＋未開扉→階段へ向かわない
+        obs = _obs(pos=(5, 5), stairs=(5, 5), hp_cur=8, hp_max=12)
+        obs.all_doors = [(5, 1)]
+        obs.unopened_doors = [(5, 1)]
+        risk = strategy.assess(obs)
+        act, _ = strategy.decide(obs, risk, IdentifyMemo(), [])
+        self.assertNotEqual(act.type, "descend")
+
+    def test_stairs_when_dying(self):
+        # 瀕死（HP15%未満）＋回復不能＋未開扉→階段へ退避する
+        obs = _obs(pos=(5, 5), stairs=(5, 5), hp_cur=1, hp_max=12,
+                   flags={"blind": True})
+        obs.all_doors = [(5, 1)]
+        obs.unopened_doors = [(5, 1)]
+        risk = strategy.assess(obs)
+        self.assertTrue(strategy.is_dying(obs))
+        act, _ = strategy.decide(obs, risk, IdentifyMemo(), [])
+        self.assertEqual(act.type, "descend")
+
+    def test_is_dying(self):
+        self.assertTrue(strategy.is_dying(_obs(hp_cur=1, hp_max=12)))
+        self.assertTrue(strategy.is_dying(_obs(moves_left=100)))
+        self.assertFalse(strategy.is_dying(_obs(hp_cur=8, hp_max=12, moves_left=1000)))
+
+    def test_fight_correction(self):
+        obs = _obs(pos=(17, 60),
+                   monsters=[{"pos": (16, 60), "glyph": "E", "flags": 0},
+                             {"pos": (17, 53), "glyph": "E", "flags": 0}])
+        adj = strategy.adjacent_enemy_dirs(obs)
+        self.assertEqual(adj, {"k": "E"})
+        self.assertEqual(strategy.fight_correction(obs, "k"), "k")
+        self.assertEqual(strategy.fight_correction(obs, "h"), "k")
+        obs2 = _obs(pos=(10, 10))
+        self.assertIsNone(strategy.fight_correction(obs2, "h"))
+
     def _deadend_obs(self, pos=(10, 10)):
         # 行き止まり通路：周囲は壁、自マスのみTUNNEL
         obs = _obs(pos=pos)
