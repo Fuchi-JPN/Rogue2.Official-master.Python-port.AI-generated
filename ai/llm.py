@@ -373,7 +373,9 @@ class LLMAgentPolicy:
     def __init__(self, client: ChatClient, memo=None, fallback=None,
                  max_consecutive_failures: int = 5,
                  fallback_enabled: bool = False,
-                 max_parse_retries: int = 2):
+                 max_parse_retries: int = 2,
+                 max_request_retries: int = 3,
+                 retry_backoff: float = 2.0):
         self.client = client
         self.memo = memo if memo is not None else IdentifyMemo()
         self.fallback = fallback
@@ -381,6 +383,8 @@ class LLMAgentPolicy:
         self.max_consecutive_failures = max_consecutive_failures
         self.fallback_enabled = fallback_enabled
         self.max_parse_retries = max_parse_retries
+        self.max_request_retries = max_request_retries
+        self.retry_backoff = retry_backoff
         self.pinned_scripted = False
         self.pos_history: list = []
         self.last_latency_ms = 0
@@ -394,20 +398,28 @@ class LLMAgentPolicy:
         self.memory = strategy.ExplorationMemory()
 
     def _complete_with_retry(self, user: str):
-        """complete＋parse retry。通信失敗は即送出、parse失敗は再試行する。
+        """complete＋parse retry。通信失敗・parse失敗とも再試行する。
 
-        モデルの一過性のJSON崩れは再試行で回復することが多い。
-        使い果たしたら最後の例外を送出する。
+        一過性の回線断・サーバ側リセット・JSON崩れは再試行で回復する
+        ことが多い。通信は指数バックオフ付き。使い果たしたら最後の
+        例外を送出する。
         """
         last_exc = None
-        for _ in range(1 + max(0, self.max_parse_retries)):
+        attempts = 1 + max(max(0, self.max_request_retries),
+                           max(0, self.max_parse_retries))
+        for i in range(attempts):
             try:
                 text, latency, reasoning = self.client.complete(SYSTEM_PROMPT, user)
             except Exception as e:
-                raise e  # 通信・HTTP失敗は再試行しない
+                last_exc = e
+                self.last_raw = ""
+                if i < attempts - 1:
+                    time.sleep(self.retry_backoff * (2 ** i))
+                continue
             try:
                 parse_action(text)
             except Exception as e:
+                # parse失敗は即座に新しい応答を取り直す（sleepなし）
                 last_exc = e
                 self.last_raw = text
                 continue

@@ -77,7 +77,8 @@ class TestLLM(unittest.TestCase):
 
     def test_fallback_on_failure(self):
         # 既定はフォールバックせず終了（原因付き）
-        pol = llm.LLMAgentPolicy(_FailClient(), max_consecutive_failures=2)
+        pol = llm.LLMAgentPolicy(_FailClient(), max_consecutive_failures=2,
+                                 max_request_retries=0, max_parse_retries=0)
         obs = AIObservation()
         obs.status.hp_cur = 12
         obs.status.hp_max = 12
@@ -92,7 +93,8 @@ class TestLLM(unittest.TestCase):
     def test_opt_in_fallback(self):
         # --ai-llm-fallback時のみscripted継続
         pol = llm.LLMAgentPolicy(_FailClient(), max_consecutive_failures=2,
-                                 fallback_enabled=True)
+                                 fallback_enabled=True,
+                                 max_request_retries=0, max_parse_retries=0)
         obs = AIObservation()
         obs.status.hp_cur = 12
         obs.status.hp_max = 12
@@ -132,7 +134,51 @@ class TestLLM(unittest.TestCase):
         class Bad(llm.ChatClient):
             def complete(self, system, user, temperature=0.2, max_tokens=512):
                 return '{"type": "move"\n"direction": "h"}', 1, ""
-        pol = llm.LLMAgentPolicy(Bad(), max_parse_retries=1)
+        pol = llm.LLMAgentPolicy(Bad(), max_parse_retries=1, max_request_retries=0)
+        obs = AIObservation()
+        obs.status.hp_cur = 12
+        obs.status.hp_max = 12
+        obs.status.moves_left = 1000
+        obs.player_pos = (10, 10)
+        obs._tile_cache = {}
+        with self.assertRaises(llm.LLMConnectionError):
+            pol.decide(obs, [])
+
+    def test_request_retry_recovers(self):
+        # 2回回線失敗→3回目成功で継続する
+        import urllib.error
+
+        class FlakyNet(llm.ChatClient):
+            def __init__(self):
+                self.n = 0
+
+            def complete(self, system, user, temperature=0.2, max_tokens=512):
+                self.n += 1
+                if self.n <= 2:
+                    raise urllib.error.URLError("Connection reset by peer")
+                return '{"type":"rest","reason":"ok"}', 1, ""
+
+        pol = llm.LLMAgentPolicy(FlakyNet(), max_request_retries=3,
+                                 max_parse_retries=0, retry_backoff=0)
+        obs = AIObservation()
+        obs.status.hp_cur = 12
+        obs.status.hp_max = 12
+        obs.status.moves_left = 1000
+        obs.player_pos = (10, 10)
+        obs._tile_cache = {}
+        act, _ = pol.decide(obs, [])
+        self.assertEqual(act.type, "rest")
+        self.assertEqual(pol.client.n, 3)
+
+    def test_request_retry_exhausted(self):
+        import urllib.error
+
+        class DeadNet(llm.ChatClient):
+            def complete(self, system, user, temperature=0.2, max_tokens=512):
+                raise urllib.error.URLError("Connection reset by peer")
+
+        pol = llm.LLMAgentPolicy(DeadNet(), max_request_retries=1,
+                                 max_parse_retries=0, retry_backoff=0)
         obs = AIObservation()
         obs.status.hp_cur = 12
         obs.status.hp_max = 12
