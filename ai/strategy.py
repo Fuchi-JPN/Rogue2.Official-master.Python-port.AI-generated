@@ -106,7 +106,8 @@ RIGHT_OF = {'h': 'k', 'k': 'l', 'l': 'j', 'j': 'h'}
 class ExplorationMemory:
     """踏破記憶：未開の扉（未通過の+）を覚える。
 
-    ドアを「開ける」＝そのタイルを踏むこと。階層変化でリセットする。
+    扉の開封＝両側の隣接タイルを踏破すること（ただ踏むだけでは
+    未開のまま）。階層変化でリセットする。
     """
 
     SEARCH_BUDGET = 10  # 行き止まりでの隠し扉探索の上限手数
@@ -114,32 +115,49 @@ class ExplorationMemory:
     def __init__(self):
         self.level = None
         self.visited: set = set()
-        self.opened: set = set()
+        self.known: set = set()  # 一度でも見えた扉（可視外でも追跡）
         self.search_counts: dict = {}  # pos -> 探索手数
         self.deadends: set = set()  # 探索打ち切り済みの行き止まり
+        self.skipped_doors: set = set()  # 探索を諦めた扉（後回し）
 
     def update(self, obs: AIObservation):
         lv = obs.status.level
         if lv != self.level:
             self.level = lv
             self.visited = set()
-            self.opened = set()
+            self.known = set()
             self.search_counts = {}
             self.deadends = set()
+            self.skipped_doors = set()
         pos = tuple(obs.player_pos)
         self.visited.add(pos)
-        for d in getattr(obs, "all_doors", None) or []:
-            if tuple(d) == pos:
-                self.opened.add(tuple(d))
+        for d in getattr(obs, "visible_doors", None) or []:
+            self.known.add(tuple(d))
+
+    def door_cleared(self, d) -> bool:
+        """扉の両側を踏破済みか（対向する隣接ペアの存在）"""
+        r, c = tuple(d)
+        v = self.visited
+        if ((r - 1, c) in v and (r + 1, c) in v):
+            return True
+        if ((r, c - 1) in v and (r, c + 1) in v):
+            return True
+        return False
 
     def unopened(self, obs: AIObservation) -> list:
-        return [tuple(d) for d in (getattr(obs, "all_doors", None) or [])
-                if tuple(d) not in self.opened]
+        # 粘着式：一度見えた未開扉は可視外でも追跡する（明滅防止）
+        return [d for d in self.known if not self.door_cleared(d)]
 
     def unopened_visible(self, obs: AIObservation) -> list:
-        """表示中の未開扉のみ。降下判断はこの一覧で行う"""
+        """表示中の未開扉のみ（表示用。判断はunopenedを使う）"""
         return [tuple(d) for d in (getattr(obs, "visible_doors", None) or [])
-                if tuple(d) not in self.opened]
+                if not self.door_cleared(d)]
+
+    def ordered_unopened(self, obs: AIObservation) -> list:
+        """判断用の未開扉列（諦め扉は後回し、距離順）"""
+        pos = tuple(obs.player_pos)
+        return sorted(self.unopened(obs),
+                      key=lambda d: (d in self.skipped_doors, _dist(pos, d)))
 
     def search_count_at(self, pos) -> int:
         return self.search_counts.get(tuple(pos), 0)
@@ -176,10 +194,24 @@ class ExplorationMemory:
         pos = tuple(obs.player_pos)
         n = self.search_counts.get(pos, 0)
         if n >= self.SEARCH_BUDGET:
+            # 探索を諦めた状態へ：打ち切り位置＋最寄り扉を後回しにし、
+            # 別の未探索扉へ転進できるようにする
             self.deadends.add(pos)
+            doors = list(getattr(obs, "visible_doors", None) or []) or \
+                list(getattr(obs, "all_doors", None) or [])
+            if doors:
+                near = min(doors, key=lambda p: _dist(pos, tuple(p)))
+                self.skipped_doors.add(tuple(near))
             return None
         self.search_counts[pos] = n + 1
         return AIAction(type="search")
+
+    def door_priority(self, pos, doors: list):
+        """扉の優先順位キー（諦め扉は後回し、距離順）"""
+        p = tuple(pos)
+        return sorted(doors,
+                      key=lambda d: (tuple(d) in self.skipped_doors,
+                                     _dist(p, tuple(d))))
 
 
 REVERSE_OF = {'h': 'l', 'l': 'h', 'j': 'k', 'k': 'j',
@@ -208,32 +240,15 @@ def corridor_step(obs: AIObservation, heading):
     if heading in LEFT_OF:
         left = LEFT_OF[heading]
         right = RIGHT_OF[heading]
-        l_ok = left in legal and left != back
-        r_ok = right in legal and right != back
-        if l_ok:
-            return left
-        if r_ok:
-            return right
-    return None
-    if not heading or heading not in DIR_DELTA:
-        return None
-    cache = getattr(obs, "_tile_cache", {}) or {}
-    pr, pc = obs.player_pos
-    cur = cache.get((pr, pc))
-    if cur is None or not (cur & (const.TUNNEL | const.DOOR)):
-        return None
-    legal = set(legal_moves(obs))
-    back = REVERSE_OF.get(heading)
-    if heading in legal:
-        return heading
-    if heading in LEFT_OF:
-        left = LEFT_OF[heading]
-        right = RIGHT_OF[heading]
-        # 左手法：左優先、なければ右。戻りは選ばない
-        if left in legal and left != back:
-            return left
-        if right in legal and right != back:
-            return right
+        # 左手法＋奥行き優先：両開通は奥の深い側へ、同等なら左へ
+        opts = [d for d in (left, right) if d in legal and d != back]
+        if not opts:
+            return None
+        if len(opts) == 1:
+            return opts[0]
+        rl = passage_ray_len(obs, left)
+        rr = passage_ray_len(obs, right)
+        return left if rl >= rr else right
     return None
 
 
@@ -464,8 +479,7 @@ def route_hint(obs: AIObservation, heading=None):
     unopened = getattr(obs, "unopened_doors", None) or []
     if unopened and not is_dying(obs):
         cands = forward_filter(obs, heading, unopened)
-        if cands:
-            tgt = min(cands, key=lambda p: _dist(obs.player_pos, tuple(p)))
+        for tgt in cands:
             d = _first_step_toward(obs, tuple(tgt))
             if d:
                 return d, "unopened door"
@@ -524,7 +538,7 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
 
     # S4: 空腹（餓死回避のみ最優先。回復・ stair より上）
     if risk.hunger_level in ("weak", "faint"):
-        act = _seek_food(obs, allow_run)
+        act = _seek_food(obs, allow_run, heading)
         if act:
             return act
         # 食料が見えなければ降下を急ぐ
@@ -565,21 +579,22 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
 
     # S4続き：hungry段階の食料探索
     if risk.hunger_level == "hungry":
-        act = _seek_food(obs, allow_run)
+        act = _seek_food(obs, allow_run, heading)
         if act:
             return act
 
     # S6: 階段へ（未開の扉が残っていれば扉優先。瀕死のみ例外）
+    # obs.unopened_doorsは諦め扉後回し・距離順に整列済み
     unopened = getattr(obs, "unopened_doors", None) or []
     dying = is_dying(obs)
     if committed_to_passage(obs, heading) and not dying:
         # 通路専念中は後方の扉に引き戻されない
         unopened = forward_filter(obs, heading, unopened)
     if unopened and not dying:
-        tgt = min(unopened, key=lambda p: _dist(obs.player_pos, tuple(p)))
-        d = _first_step_toward(obs, tuple(tgt))
-        if d:
-            return travel_action(obs, d, tgt, allow_run), "未開の扉へ"
+        for tgt in unopened:
+            d = _first_step_toward(obs, tuple(tgt))
+            if d:
+                return travel_action(obs, d, tgt, allow_run), "未開の扉へ"
     if risk.should_descend and obs.stairs_pos and (not unopened or dying):
         d = _first_step_toward(obs, obs.stairs_pos)
         if d:
@@ -588,7 +603,7 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
             return AIAction(type="descend"), "階段を降りる"
 
     # S7: 探索歩行（階段・未踏破へ）
-    d = _explore_step(obs, pos_history)
+    d = _explore_step(obs, pos_history, heading)
     if d:
         return AIAction(type="move", direction=d), "未踏破方向へ探索"
 
@@ -695,11 +710,37 @@ def _item_at_feet(obs: AIObservation) -> bool:
     return any(it["pos"] == obs.player_pos for it in obs.visible_items)
 
 
-def _seek_food(obs: AIObservation, allow_run: bool = True):
-    """食料（':'）への移動。なければNone"""
+def passage_ray_len(obs: AIObservation, d: str, limit: int = 30) -> int:
+    """方向dへの直線到達距離（奥行き）。斜め規則込み"""
+    if d not in DIR_DELTA:
+        return 0
+    tile_fn = _obs_tile_fn(obs)
+    pr, pc = tuple(obs.player_pos)
+    dr, dc = DIR_DELTA[d]
+    r, c = pr, pc
+    n = 0
+    for _ in range(limit):
+        nr, nc = r + dr, c + dc
+        t = tile_fn(nr, nc)
+        if t is None or not tile_passable(t):
+            break
+        if dr != 0 and dc != 0 and _diag_blocked(tile_fn, r, c, nr, nc):
+            break
+        n += 1
+        r, c = nr, nc
+    return n
+
+
+def _seek_food(obs: AIObservation, allow_run: bool = True, heading=None):
+    """食料（':'）への移動。なければNone。通路専念中は前方のみ"""
     foods = [it for it in obs.visible_items if it.get("glyph") == ":"]
     if not foods:
         return None
+    if committed_to_passage(obs, heading) and not is_dying(obs):
+        foods = [it for it in foods
+                 if forward_filter(obs, heading, [it["pos"]])]
+        if not foods:
+            return None
     tgt = min(foods, key=lambda it: _dist(obs.player_pos, it["pos"]))["pos"]
     if tgt == obs.player_pos:
         return AIAction(type="pickup"), "食料を拾得"
@@ -709,14 +750,19 @@ def _seek_food(obs: AIObservation, allow_run: bool = True):
     return None
 
 
-def _explore_step(obs: AIObservation, pos_history: list):
-    """未訪問寄りの移動可能方向。履歴の逆方向を避ける"""
+def _explore_step(obs: AIObservation, pos_history: list, heading=None):
+    """未訪問寄りの移動可能方向。履歴の逆方向を避ける。
+    通路専念中は前方半球に限定する"""
     pr, pc = obs.player_pos
     cache = getattr(obs, "_tile_cache", {}) or {}
     recent = set(pos_history[-4:]) if pos_history else set()
+    fwd_only = committed_to_passage(obs, heading) and not is_dying(obs)
+    fdr, fdc = DIR_DELTA[heading] if fwd_only else (0, 0)
     cands = []
     for d, (dr, dc) in DIR_DELTA.items():
         nxt = (pr + dr, pc + dc)
+        if fwd_only and ((nxt[0] - pr) * fdr + (nxt[1] - pc) * fdc < 0):
+            continue
         t = cache.get(nxt)
         if t is None or not tile_passable(t):
             continue

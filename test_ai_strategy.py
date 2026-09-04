@@ -213,12 +213,26 @@ class TestStrategy(unittest.TestCase):
         self.assertEqual(strategy.corridor_step(obs, "l"), "j")
 
     def test_corridor_junction_left(self):
-        # 左右とも開通→左手法で左へ（引き返さない）
+        # 左右とも開通→奥の深い側へ（同等なら左）
         obs = self._tunnel_obs()
         obs._tile_cache[(11, 10)] = const.TUNNEL
         obs._tile_cache[(9, 10)] = const.TUNNEL
         obs._tile_cache[(10, 11)] = const.VERTWALL
         self.assertEqual(strategy.corridor_step(obs, "l"), "k")
+
+    def test_corridor_deeper_branch(self):
+        # 右（南）が奥深い→右へ（左は1マスのみ）
+        obs = self._tunnel_obs()
+        obs._tile_cache[(10, 11)] = const.VERTWALL
+        obs._tile_cache[(9, 10)] = const.TUNNEL
+        for r in range(11, 16):
+            obs._tile_cache[(r, 10)] = const.TUNNEL
+        self.assertEqual(strategy.corridor_step(obs, "l"), "j")
+
+    def test_passage_ray_len(self):
+        obs = self._tunnel_obs(pos=(10, 6))
+        self.assertGreaterEqual(strategy.passage_ray_len(obs, "l"), 8)
+        self.assertEqual(strategy.passage_ray_len(obs, "h"), 1)
 
     def test_corridor_not_on_tunnel(self):
         obs = _obs()  # FLOOR上
@@ -267,19 +281,29 @@ class TestStrategy(unittest.TestCase):
         mem = strategy.ExplorationMemory()
         obs = _obs(pos=(10, 10))
         obs.all_doors = [(10, 12), (15, 15)]
+        obs.visible_doors = [(10, 12), (15, 15)]
         mem.update(obs)
         self.assertEqual(sorted(mem.unopened(obs)), [(10, 12), (15, 15)])
-        # 扉を踏んだら開封済み
+        # 扉を踏んだだけでは未開のまま
         obs2 = _obs(pos=(10, 12))
         obs2.all_doors = [(10, 12), (15, 15)]
         mem.update(obs2)
-        self.assertEqual(mem.unopened(obs2), [(15, 15)])
-        # 階層変化でリセット
-        obs3 = _obs(pos=(5, 5))
-        obs3.status.level = 99
-        obs3.all_doors = [(5, 6)]
+        self.assertEqual(sorted(mem.unopened(obs2)), [(10, 12), (15, 15)])
+        # 両側を踏破したら開封（西側→扉→東側と通過）
+        obs2b = _obs(pos=(10, 11))
+        obs2b.all_doors = [(10, 12), (15, 15)]
+        mem.update(obs2b)
+        obs3 = _obs(pos=(10, 13))
+        obs3.all_doors = [(10, 12), (15, 15)]
         mem.update(obs3)
-        self.assertEqual(mem.unopened(obs3), [(5, 6)])
+        self.assertEqual(mem.unopened(obs3), [(15, 15)])
+        # 階層変化でリセット
+        obs4 = _obs(pos=(5, 5))
+        obs4.status.level = 99
+        obs4.all_doors = [(5, 6)]
+        obs4.visible_doors = [(5, 6)]
+        mem.update(obs4)
+        self.assertEqual(mem.unopened(obs4), [(5, 6)])
 
     def test_unopened_visible_only(self):
         # 降下判断は表示中の扉のみが対象
@@ -289,7 +313,40 @@ class TestStrategy(unittest.TestCase):
         obs.visible_doors = [(10, 12)]
         mem.update(obs)
         self.assertEqual(mem.unopened_visible(obs), [(10, 12)])
-        self.assertEqual(sorted(mem.unopened(obs)), [(10, 12), (30, 30)])
+        # 粘着式：見えた扉のみが既知になる
+        self.assertEqual(sorted(mem.unopened(obs)), [(10, 12)])
+
+    def test_sticky_unopened_out_of_view(self):
+        # 一度見えた未開扉は可視外でも追跡する（明滅防止）
+        mem = strategy.ExplorationMemory()
+        obs = _obs(pos=(10, 10))
+        obs.all_doors = [(10, 12)]
+        obs.visible_doors = [(10, 12)]
+        mem.update(obs)
+        obs2 = _obs(pos=(19, 28))
+        obs2.all_doors = [(10, 12)]
+        obs2.visible_doors = []  # 視界外
+        mem.update(obs2)
+        self.assertEqual(mem.unopened(obs2), [(10, 12)])
+        self.assertEqual(mem.unopened_visible(obs2), [])
+
+    def test_give_up_skips_door(self):
+        # 10手不発で打ち切り→当該扉を後回しにして別扉へ
+        mem = strategy.ExplorationMemory()
+        obs = _obs(pos=(10, 10))
+        obs.all_doors = [(10, 12), (10, 8)]
+        obs.visible_doors = [(10, 12), (10, 8)]
+        mem.update(obs)
+        dead = self._deadend_obs(pos=(10, 10))
+        dead.all_doors = [(10, 12), (10, 8)]
+        dead.visible_doors = [(10, 12), (10, 8)]
+        for _ in range(10):
+            self.assertIsNotNone(mem.deadend_action(dead, "l"))
+        self.assertIsNone(mem.deadend_action(dead, "l"))  # 11手目で打ち切り
+        self.assertIn((10, 10), mem.deadends)
+        ordered = mem.ordered_unopened(dead)
+        # 最寄り(10,12)が後回しになり(10,8)が先頭へ
+        self.assertEqual(ordered[0], (10, 8))
 
     def test_unopened_door_before_descend(self):
         # HP満タン・階段上でも未開扉があれば扉へ

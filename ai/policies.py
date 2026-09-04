@@ -30,7 +30,7 @@ class ScriptedPolicy(Policy):
 
     def decide(self, obs: AIObservation, history: list):
         self.memory.update(obs)
-        obs.unopened_doors = self.memory.unopened_visible(obs)
+        obs.unopened_doors = self.memory.ordered_unopened(obs)
         risk = strategy.assess(obs)
         action, reason = strategy.decide(obs, risk, self.memo, self.pos_history,
                                          heading=self.heading, memory=self.memory)

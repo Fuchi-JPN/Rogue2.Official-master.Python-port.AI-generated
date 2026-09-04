@@ -107,15 +107,16 @@ def build_strategy_section() -> str:
     "8. Follow the Shortest-path hint for movement: it is the computed shortest route (stairs when reachable, otherwise the nearest door). "
     "If the room has no items and no enemies, head to the visible door (+) into the next room instead of wandering.\n"
     "9. Corridors: once on a passage (#), keep your Previous-move heading (same direction); "
-    "at junctions take the left open branch (left-hand rule), never go back the way you came. "
+    "at junctions take the deeper branch (longer straight ray; tie goes left), never go back the way you came. "
     "While committed to a passage, ignore items/doors/stairs BEHIND you; only forward goals count. "
+    "Reach the dead end first; if no door there, search. "
     "Make for the next + door. Do not reverse without reason (fighting/fleeing/adjacent pickup only).\n"
     "   After passing through a door (+), NEVER turn back into the room you came from: "
     "keep going through the passage until the next door, unless fighting, fleeing, or picking an adjacent item.\n"
-    "10. Clear the visible area first: while visible Unopened doors remain, NEVER head for the stairs "
+    "10. Clear the floor first: while known Unopened doors remain (even out of view), NEVER head for the stairs "
     "unless you are dying (HP below 15%% of max, or food counter weak/faint). "
     "Visible items always beat doors: pick up everything you can see first. "
-    "Open every door you can see, enter each room, then take the stairs.\n"
+    "Open every known door, enter each room, then take the stairs.\n"
     "11. Dead ends: if you are on a passage/door with nowhere to go, use search (up to 10 times) "
     "to reveal hidden doors. The prompt shows Dead-end searches so far.\n"
     "12. Prefer run over move for travel of 3+ tiles in a straight clear line "
@@ -163,7 +164,7 @@ def format_observation(obs: AIObservation, risk, memo: IdentifyMemo, history_sum
     adj = strategy.adjacent_enemy_dirs(obs)
     adj_txt = ", ".join("%s=%s" % (d, g) for d, g in sorted(adj.items())) or "none"
     unopened = getattr(obs, "unopened_doors", None) or []
-    unopened_txt = ", ".join(str(tuple(p)) for p in unopened[:12]) or "none (visible area cleared)"
+    unopened_txt = ", ".join(str(tuple(p)) for p in unopened[:12]) or "none (floor cleared)"
     heading_txt = ("none (no previous move)"
                    if not heading else
                    "%s (you are heading %s)" % (heading, strategy.COMPASS.get(heading, "?")))
@@ -180,7 +181,7 @@ def format_observation(obs: AIObservation, risk, memo: IdentifyMemo, history_sum
         "Turn %d, Dungeon level %d. Survival risk: HP %d/%d (%d%%), "
         "food counter %d (%s), adjacent enemies %d, escape routes %d, safe-to-rest=%s.\n"
         "Position %s, room %s. Stairs: %s. Doors: %s.\n"
-        "Unopened doors (visible, rooms not yet entered; clear them before descending): %s.\n"
+        "Unopened doors (known, including out-of-view ones; clear them before descending): %s.\n"
         "Dead-end searches so far at your tile (search up to 10 if stuck): %d.\n"
         "Previous move (your heading): %s.\n"
         "Legal moves (passable tiles only, never bump walls): %s.\n"
@@ -453,7 +454,7 @@ class LLMAgentPolicy:
             self.last_fallback = True
             return act, reason + "（scripted固定）"
         self.memory.update(obs)
-        obs.unopened_doors = self.memory.unopened_visible(obs)
+        obs.unopened_doors = self.memory.ordered_unopened(obs)
         obs.search_count = self.memory.search_count_at(obs.player_pos)
         risk = strategy.assess(obs)
         hist = "; ".join(str(h) for h in history[-5:])
