@@ -384,7 +384,6 @@ def bfs_distance(obs: AIObservation, target: tuple):
 
 
 RUN_MIN_DIST = 3  # この距離以上かつ直線路なら高速移動（run）を使う
-ITEM_NEARBY_DIST = 5  # この距離以内の品は扉より優先する
 
 
 def oscillating(pos_history: list) -> bool:
@@ -451,19 +450,17 @@ def forward_filter(obs: AIObservation, heading, points: list) -> list:
 def route_hint(obs: AIObservation, heading=None):
     """LLM用の経路ヒント (方向, 目的) を返す。なければ (None, None)。
 
-    近傍品→未開扉→階段→扉の順。通路専念中は後方目標を除外する。
+    可視品→未開扉→階段→扉の順。通路専念中は後方目標を除外する。
     """
     items = list(getattr(obs, "visible_items", None) or [])
     if committed_to_passage(obs, heading) and not is_dying(obs):
         items = [it for it in items
                  if forward_filter(obs, heading, [it["pos"]])]
-    near = [it for it in items
-            if _dist(obs.player_pos, it["pos"]) <= ITEM_NEARBY_DIST]
-    if near and not is_dying(obs):
-        tgt = min(near, key=lambda it: _dist(obs.player_pos, it["pos"]))["pos"]
+    if items and not is_dying(obs):
+        tgt = min(items, key=lambda it: _dist(obs.player_pos, it["pos"]))["pos"]
         d = _first_step_toward(obs, tuple(tgt))
         if d:
-            return d, "nearby item"
+            return d, "item"
     unopened = getattr(obs, "unopened_doors", None) or []
     if unopened and not is_dying(obs):
         cands = forward_filter(obs, heading, unopened)

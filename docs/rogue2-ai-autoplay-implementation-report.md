@@ -222,3 +222,7 @@ python -m python.main --ai --ai-headless --ai-max-turns 500         # 高速回�
 ## 追補30：近傍品の扉優先（5マス以内）
 
 - 要望により、近傍（`ITEM_NEARBY_DIST=5`）の品は扉より優先。`route_hint`の先頭に近傍品分岐を追加（LLM・ドライバ格上げに反映）。ScriptedのS5は従来から品優先のため変更なし。SYSTEM第10条にも明記。
+
+## 追補31：可視品の扉優先を距離無制限に
+
+- 部屋内の遠方品が扉に負けていたため、`route_hint`の品分岐から5マス制限を撤廃（可視＝半径10以内の品は全て扉より先）。未使用定数`ITEM_NEARBY_DIST`を削除。

@@ -114,7 +114,7 @@ def build_strategy_section() -> str:
     "keep going through the passage until the next door, unless fighting, fleeing, or picking an adjacent item.\n"
     "10. Clear the visible area first: while visible Unopened doors remain, NEVER head for the stairs "
     "unless you are dying (HP below 15%% of max, or food counter weak/faint). "
-    "When items are nearby (within 5), take them before doors. "
+    "Visible items always beat doors: pick up everything you can see first. "
     "Open every door you can see, enter each room, then take the stairs.\n"
     "11. Dead ends: if you are on a passage/door with nowhere to go, use search (up to 10 times) "
     "to reveal hidden doors. The prompt shows Dead-end searches so far.\n"
@@ -170,8 +170,8 @@ def format_observation(obs: AIObservation, risk, memo: IdentifyMemo, history_sum
     hint_dir, hint_target = strategy.route_hint(obs, heading)
     if hint_dir and hint_target == "stairs":
         hint = "move %s toward the stairs (shortest path)" % hint_dir
-    elif hint_dir and hint_target == "nearby item":
-        hint = "move %s toward the nearby item first (items beat doors)" % hint_dir
+    elif hint_dir and hint_target == "item":
+        hint = "move %s toward the visible item first (items beat doors)" % hint_dir
     elif hint_dir:
         hint = "move %s toward the nearest passage/door ahead (shortest path, keep forward)" % hint_dir
     else:

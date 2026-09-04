@@ -180,8 +180,17 @@ class TestStrategy(unittest.TestCase):
         obs.unopened_doors = [(10, 14)]
         obs.visible_items = [{"pos": (10, 12), "glyph": "*", "type": 1, "slot": "a"}]
         d, target = strategy.route_hint(obs)
-        self.assertEqual(target, "nearby item")
+        self.assertEqual(target, "item")
         self.assertEqual(d, "l")
+
+    def test_route_hint_far_item_first(self):
+        # 室内の遠方品も扉より優先（距離無制限）
+        obs = _obs(pos=(10, 10), stairs=None)
+        obs.visible_doors = [(10, 18)]
+        obs.unopened_doors = [(10, 18)]
+        obs.visible_items = [{"pos": (14, 14), "glyph": "?", "type": 1, "slot": "a"}]
+        d, target = strategy.route_hint(obs)
+        self.assertEqual(target, "item")
 
     def _tunnel_obs(self, pos=(10, 10)):
         # 全壁に通路1本（横方向）の盤面
