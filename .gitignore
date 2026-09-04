@@ -12,6 +12,8 @@ venv/
 keylog.txt
 ai_session.jsonl
 ai_trace.jsonl
+ai_anomalies.jsonl
+ai_watch.state.json
 rogue.screen
 *.sav
 

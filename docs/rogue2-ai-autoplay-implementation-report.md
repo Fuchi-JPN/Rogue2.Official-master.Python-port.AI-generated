@@ -208,3 +208,17 @@ python -m python.main --ai --ai-headless --ai-max-turns 500         # 高速回�
 
 - 症状：HP4/12で13手連続restし空腹だけ消費して停滞検知に至った。移動中も同率で自然回復するため非効率。
 - 対策：S3を最終手段へ格下げ。HP半分以下でも敵が見えなければ探索継続し、することが尽きた時のみ休む。SYSTEM第2条も同文言に更新。
+
+## 追補29：前方半球フィルタ（通路専念中の逆戻り排除）
+
+- 症状：右扉から出た直後に部屋へ逆戻りし往復。分岐点で通常判断（背後の品・扉・階段ヒント）が勝っていた。
+- 対策：通路・扉上で向き既知の間は後方目標を除外（品・未開扉・階段ヒント・扉ヒント）。`committed_to_passage`＋`forward_filter`をS5/S6/`route_hint`/ドライバ格上げに適用。SYSTEM第9条も同文言。
+
+## 追補28：60秒監視ループ（`ai/watch.py`）
+
+- `ai_session/trace/debug.log`を増分追跡し、crash/exception/stop/death/thrash/補正連続/空振り反復/LLM失敗/stuckを検知して`ai_anomalies.jsonl`へ記録。`--once`単発・`--interval`変更・`--on-anomaly`フック（エージェントCLI等の外部修正ループと接続可）。
+- 修正の自動適用は行わない（検知＋報告まで）。実ログでの試運転で既知の停止履歴を正しく検出。
+
+## 追補30：近傍品の扉優先（5マス以内）
+
+- 要望により、近傍（`ITEM_NEARBY_DIST=5`）の品は扉より優先。`route_hint`の先頭に近傍品分岐を追加（LLM・ドライバ格上げに反映）。ScriptedのS5は従来から品優先のため変更なし。SYSTEM第10条にも明記。

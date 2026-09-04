@@ -153,6 +153,36 @@ class TestStrategy(unittest.TestCase):
         self.assertEqual(target, "door")
         self.assertEqual(d, "l")
 
+    def test_forward_filter(self):
+        # 通路専念中は後方目標を除外する
+        obs = self._tunnel_obs(pos=(10, 10))
+        self.assertTrue(strategy.committed_to_passage(obs, "l"))
+        pts = [(10, 8), (10, 12), (9, 10)]
+        self.assertEqual(strategy.forward_filter(obs, "l", pts), [(10, 12), (9, 10)])
+        # 非通路では素通し
+        obs2 = _obs(pos=(10, 10))
+        self.assertEqual(strategy.forward_filter(obs2, "l", pts), pts)
+
+    def test_route_hint_ignores_behind(self):
+        # 通路上で後方の扉・階段はヒントに出さない
+        obs = self._tunnel_obs(pos=(10, 10))
+        obs.stairs_pos = (10, 5)
+        obs.visible_doors = [(10, 5)]
+        obs.unopened_doors = []
+        d, target = strategy.route_hint(obs, heading="l")
+        self.assertIsNone(d)
+
+    def test_route_hint_nearby_item_first(self):
+        # 近傍品は扉より優先
+        obs = self._tunnel_obs(pos=(10, 10))
+        obs.stairs_pos = None
+        obs.visible_doors = [(10, 14)]
+        obs.unopened_doors = [(10, 14)]
+        obs.visible_items = [{"pos": (10, 12), "glyph": "*", "type": 1, "slot": "a"}]
+        d, target = strategy.route_hint(obs)
+        self.assertEqual(target, "nearby item")
+        self.assertEqual(d, "l")
+
     def _tunnel_obs(self, pos=(10, 10)):
         # 全壁に通路1本（横方向）の盤面
         obs = _obs(pos=pos)

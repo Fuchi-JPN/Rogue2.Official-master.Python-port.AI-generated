@@ -384,6 +384,7 @@ def bfs_distance(obs: AIObservation, target: tuple):
 
 
 RUN_MIN_DIST = 3  # この距離以上かつ直線路なら高速移動（run）を使う
+ITEM_NEARBY_DIST = 5  # この距離以内の品は扉より優先する
 
 
 def oscillating(pos_history: list) -> bool:
@@ -428,24 +429,57 @@ def travel_action(obs: AIObservation, d: str, target=None, allow_run: bool = Tru
     return AIAction(type="move", direction=d)
 
 
-def route_hint(obs: AIObservation):
+def committed_to_passage(obs: AIObservation, heading) -> bool:
+    """通路専念中か（通路・扉上で向き既知）。後方目標を無視する条件"""
+    if not heading or heading not in DIR_DELTA:
+        return False
+    cache = getattr(obs, "_tile_cache", {}) or {}
+    cur = cache.get(tuple(obs.player_pos))
+    return bool(cur is not None and (cur & (const.TUNNEL | const.DOOR)))
+
+
+def forward_filter(obs: AIObservation, heading, points: list) -> list:
+    """進行方向の前方半球にある点だけ残す。専念中でなければ素通し"""
+    if not committed_to_passage(obs, heading):
+        return list(points)
+    dr, dc = DIR_DELTA[heading]
+    pr, pc = tuple(obs.player_pos)
+    return [p for p in points
+            if (tuple(p)[0] - pr) * dr + (tuple(p)[1] - pc) * dc >= 0]
+
+
+def route_hint(obs: AIObservation, heading=None):
     """LLM用の経路ヒント (方向, 目的) を返す。なければ (None, None)。
 
-    未開の扉が残っていれば最寄りを優先（餓死寸前を除く）。
-    なければ階段到達可→階段、不可→到達可能な最寄り扉、の順。
+    近傍品→未開扉→階段→扉の順。通路専念中は後方目標を除外する。
     """
-    unopened = getattr(obs, "unopened_doors", None) or []
-    if unopened and not is_dying(obs):
-        tgt = min(unopened, key=lambda p: _dist(obs.player_pos, tuple(p)))
+    items = list(getattr(obs, "visible_items", None) or [])
+    if committed_to_passage(obs, heading) and not is_dying(obs):
+        items = [it for it in items
+                 if forward_filter(obs, heading, [it["pos"]])]
+    near = [it for it in items
+            if _dist(obs.player_pos, it["pos"]) <= ITEM_NEARBY_DIST]
+    if near and not is_dying(obs):
+        tgt = min(near, key=lambda it: _dist(obs.player_pos, it["pos"]))["pos"]
         d = _first_step_toward(obs, tuple(tgt))
         if d:
-            return d, "unopened door"
+            return d, "nearby item"
+    unopened = getattr(obs, "unopened_doors", None) or []
+    if unopened and not is_dying(obs):
+        cands = forward_filter(obs, heading, unopened)
+        if cands:
+            tgt = min(cands, key=lambda p: _dist(obs.player_pos, tuple(p)))
+            d = _first_step_toward(obs, tuple(tgt))
+            if d:
+                return d, "unopened door"
     if obs.stairs_pos:
-        d = _first_step_toward(obs, obs.stairs_pos)
-        if d:
-            return d, "stairs"
+        if not committed_to_passage(obs, heading) or is_dying(obs):
+            d = _first_step_toward(obs, obs.stairs_pos)
+            if d:
+                return d, "stairs"
     doors = sorted(getattr(obs, "visible_doors", []) or [],
                    key=lambda p: _dist(obs.player_pos, p))
+    doors = forward_filter(obs, heading, doors)
     for door in doors[:6]:
         d = _first_step_toward(obs, door)
         if d:
@@ -518,8 +552,13 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
             n = memory.search_count_at(obs.player_pos)
             return act, "隠し扉を探索（%d/%d）" % (n, memory.SEARCH_BUDGET)
 
-    if obs.visible_items:
-        tgt = min(obs.visible_items, key=lambda it: _dist(obs.player_pos, it["pos"]))["pos"]
+    items = list(obs.visible_items)
+    if committed_to_passage(obs, heading):
+        # 通路専念中は後方の品に引き戻されない
+        items = [it for it in items
+                 if forward_filter(obs, heading, [it["pos"]])]
+    if items:
+        tgt = min(items, key=lambda it: _dist(obs.player_pos, it["pos"]))["pos"]
         d = _first_step_toward(obs, tgt)
         if d:
             return travel_action(obs, d, tgt, allow_run), "アイテムへ移動"
@@ -536,6 +575,9 @@ def decide(obs: AIObservation, risk: RiskAssessment, memo, pos_history: list,
     # S6: 階段へ（未開の扉が残っていれば扉優先。瀕死のみ例外）
     unopened = getattr(obs, "unopened_doors", None) or []
     dying = is_dying(obs)
+    if committed_to_passage(obs, heading) and not dying:
+        # 通路専念中は後方の扉に引き戻されない
+        unopened = forward_filter(obs, heading, unopened)
     if unopened and not dying:
         tgt = min(unopened, key=lambda p: _dist(obs.player_pos, tuple(p)))
         d = _first_step_toward(obs, tuple(tgt))

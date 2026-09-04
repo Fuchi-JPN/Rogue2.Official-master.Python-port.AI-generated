@@ -318,7 +318,8 @@ class AIDriver:
         if action.type == "move" and action.direction:
             hist = getattr(self.policy, "pos_history", None) or []
             if not strategy.oscillating(hist):
-                hint_dir, _ = strategy.route_hint(obs)
+                hint_dir, _ = strategy.route_hint(
+                    obs, getattr(self.policy, "heading", None))
                 if hint_dir == action.direction and strategy.straight_runway(obs, action.direction, 3):
                     action = AIAction(type="run", direction=action.direction)
                     thought = thought + "（高速移動）"

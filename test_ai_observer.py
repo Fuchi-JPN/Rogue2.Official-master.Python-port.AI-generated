@@ -217,6 +217,40 @@ class TestDriver(unittest.TestCase):
             os.unlink(path)
 
 
+class TestWatch(unittest.TestCase):
+    def test_detect_thrash(self):
+        from ai import watch
+        recs = [{"turn": i, "action": {"type": "move", "direction": "l"},
+                 "obs": {"pos": [1, 1]}} for i in range(8)]
+        out = watch.detect(recs, [], "")
+        self.assertTrue(any(a["kind"] == "thrash" for a in out))
+
+    def test_detect_crash(self):
+        from ai import watch
+        out = watch.detect([], [], "Traceback (most recent call last):\nValueError: x")
+        self.assertTrue(any(a["kind"] == "crash" for a in out))
+
+    def test_detect_corrections(self):
+        from ai import watch
+        recs = [{"turn": i, "thought": "壁手補正つき", "action": {"type": "move"},
+                 "obs": {"pos": [i, 0]}} for i in range(6)]
+        out = watch.detect(recs, [], "")
+        self.assertTrue(any(a["kind"] == "wall-correction" for a in out))
+
+    def test_detect_miss_repeat(self):
+        from ai import watch
+        recs = [{"turn": i, "action": {"type": "fight"},
+                 "obs": {"pos": [1, 1], "message": "そこには何もいない"}} for i in range(4)]
+        out = watch.detect(recs, [], "")
+        self.assertTrue(any(a["kind"] == "miss-repeat" for a in out))
+
+    def test_no_false_positive(self):
+        from ai import watch
+        recs = [{"turn": i, "action": {"type": "move", "direction": "h"},
+                 "obs": {"pos": [i, 0], "hp": [10, 12]}} for i in range(10)]
+        self.assertEqual(watch.detect(recs, [], ""), [])
+
+
 class TestTicker(unittest.TestCase):
     def test_frame_scrolls(self):
         from ai import monitor

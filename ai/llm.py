@@ -108,11 +108,13 @@ def build_strategy_section() -> str:
     "If the room has no items and no enemies, head to the visible door (+) into the next room instead of wandering.\n"
     "9. Corridors: once on a passage (#), keep your Previous-move heading (same direction); "
     "at junctions take the left open branch (left-hand rule), never go back the way you came. "
+    "While committed to a passage, ignore items/doors/stairs BEHIND you; only forward goals count. "
     "Make for the next + door. Do not reverse without reason (fighting/fleeing/adjacent pickup only).\n"
     "   After passing through a door (+), NEVER turn back into the room you came from: "
     "keep going through the passage until the next door, unless fighting, fleeing, or picking an adjacent item.\n"
     "10. Clear the visible area first: while visible Unopened doors remain, NEVER head for the stairs "
     "unless you are dying (HP below 15%% of max, or food counter weak/faint). "
+    "When items are nearby (within 5), take them before doors. "
     "Open every door you can see, enter each room, then take the stairs.\n"
     "11. Dead ends: if you are on a passage/door with nowhere to go, use search (up to 10 times) "
     "to reveal hidden doors. The prompt shows Dead-end searches so far.\n"
@@ -165,11 +167,13 @@ def format_observation(obs: AIObservation, risk, memo: IdentifyMemo, history_sum
     heading_txt = ("none (no previous move)"
                    if not heading else
                    "%s (you are heading %s)" % (heading, strategy.COMPASS.get(heading, "?")))
-    hint_dir, hint_target = strategy.route_hint(obs)
+    hint_dir, hint_target = strategy.route_hint(obs, heading)
     if hint_dir and hint_target == "stairs":
         hint = "move %s toward the stairs (shortest path)" % hint_dir
+    elif hint_dir and hint_target == "nearby item":
+        hint = "move %s toward the nearby item first (items beat doors)" % hint_dir
     elif hint_dir:
-        hint = "move %s toward the nearest door (shortest path to next room)" % hint_dir
+        hint = "move %s toward the nearest passage/door ahead (shortest path, keep forward)" % hint_dir
     else:
         hint = "none"
     return (
